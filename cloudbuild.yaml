@@ -1,0 +1,96 @@
+# =============================================================================
+# Google Cloud Build Configuration for Cloud Run
+# =============================================================================
+# This file configures automated builds and deployments to Cloud Run
+# =============================================================================
+
+steps:
+  # Build the Docker image with build-time secrets
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - 'build'
+      - '--build-arg'
+      - 'NEXT_PUBLIC_FIREBASE_API_KEY=$$NEXT_PUBLIC_FIREBASE_API_KEY'
+      - '--build-arg'
+      - 'NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN=$$NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN'
+      - '--build-arg'
+      - 'NEXT_PUBLIC_FIREBASE_PROJECT_ID=$$NEXT_PUBLIC_FIREBASE_PROJECT_ID'
+      - '--build-arg'
+      - 'NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET=$$NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET'
+      - '--build-arg'
+      - 'NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID=$$NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID'
+      - '--build-arg'
+      - 'NEXT_PUBLIC_FIREBASE_APP_ID=$$NEXT_PUBLIC_FIREBASE_APP_ID'
+      - '-t'
+      - 'gcr.io/$PROJECT_ID/momentum:latest'
+      - '-t'
+      - 'gcr.io/$PROJECT_ID/momentum:$BUILD_ID'
+      - '.'
+    secretEnv: ['NEXT_PUBLIC_FIREBASE_API_KEY', 'NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN', 'NEXT_PUBLIC_FIREBASE_PROJECT_ID', 'NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET', 'NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID', 'NEXT_PUBLIC_FIREBASE_APP_ID']
+    id: 'build-image'
+
+  # Push the image to Container Registry
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - 'push'
+      - 'gcr.io/$PROJECT_ID/momentum:$BUILD_ID'
+    id: 'push-image-sha'
+
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - 'push'
+      - 'gcr.io/$PROJECT_ID/momentum:latest'
+    id: 'push-image-latest'
+
+  # Deploy to Cloud Run
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    entrypoint: gcloud
+    args:
+      - 'run'
+      - 'deploy'
+      - 'momentum'
+      - '--image'
+      - 'gcr.io/$PROJECT_ID/momentum:$BUILD_ID'
+      - '--region'
+      - 'us-central1'
+      - '--platform'
+      - 'managed'
+      - '--allow-unauthenticated'
+      - '--port'
+      - '8080'
+      - '--memory'
+      - '2Gi'
+      - '--cpu'
+      - '2'
+      - '--timeout'
+      - '300'
+      - '--max-instances'
+      - '10'
+      - '--min-instances'
+      - '0'
+    id: 'deploy-cloud-run'
+
+images:
+  - 'gcr.io/$PROJECT_ID/momentum:$BUILD_ID'
+  - 'gcr.io/$PROJECT_ID/momentum:latest'
+
+availableSecrets:
+  secretManager:
+    - versionName: projects/automl-migration-test/secrets/MOMENTUM_NEXT_PUBLIC_FIREBASE_API_KEY/versions/latest
+      env: 'NEXT_PUBLIC_FIREBASE_API_KEY'
+    - versionName: projects/automl-migration-test/secrets/MOMENTUM_NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN/versions/latest
+      env: 'NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN'
+    - versionName: projects/automl-migration-test/secrets/MOMENTUM_NEXT_PUBLIC_FIREBASE_PROJECT_ID/versions/latest
+      env: 'NEXT_PUBLIC_FIREBASE_PROJECT_ID'
+    - versionName: projects/automl-migration-test/secrets/MOMENTUM_NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET/versions/latest
+      env: 'NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET'
+    - versionName: projects/automl-migration-test/secrets/MOMENTUM_NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID/versions/latest
+      env: 'NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID'
+    - versionName: projects/automl-migration-test/secrets/MOMENTUM_NEXT_PUBLIC_FIREBASE_APP_ID/versions/latest
+      env: 'NEXT_PUBLIC_FIREBASE_APP_ID'
+
+options:
+  machineType: 'E2_HIGHCPU_8'
+  logging: CLOUD_LOGGING_ONLY
+
+timeout: '1200s'

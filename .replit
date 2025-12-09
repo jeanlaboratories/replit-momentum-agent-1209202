@@ -1,0 +1,61 @@
+modules = ["nodejs-20", "python-3.11", "bash"]
+[agent]
+expertMode = true
+
+[nix]
+channel = "stable-25_05"
+packages = ["gh"]
+
+[workflows]
+runButton = "Project"
+
+[[workflows.workflow]]
+name = "Project"
+mode = "parallel"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "workflow.run"
+args = "Start application"
+
+[[workflows.workflow]]
+name = "Start application"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "npm run dev"
+waitForPort = 5000
+
+[workflows.workflow.metadata]
+outputType = "webview"
+
+[[ports]]
+localPort = 5000
+externalPort = 80
+
+[[ports]]
+localPort = 42585
+externalPort = 3000
+
+[deployment]
+deploymentTarget = "vm"
+run = ["bash", "start-services.sh"]
+build = ["npm", "run", "build"]
+
+[userenv]
+
+[userenv.shared]
+MOMENTUM_NEXT_PUBLIC_FIREBASE_API_KEY = "AIzaSyBo5F5PxBFrStGZDAuauWrC5KuSJ4abRg4"
+MOMENTUM_NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN = "momentum-fa852.firebaseapp.com"
+MOMENTUM_NEXT_PUBLIC_FIREBASE_PROJECT_ID = "momentum-fa852"
+MOMENTUM_NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET = "momentum-fa852.firebasestorage.app"
+MOMENTUM_NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID = "565460316123"
+MOMENTUM_NEXT_PUBLIC_FIREBASE_APP_ID = "1:565460316123:web:ba3dfc2474922787b6c1fe"
+MOMENTUM_ENABLE_MEMORY_BANK = "true"
+NEXT_PUBLIC_FIREBASE_API_KEY = "AIzaSyBo5F5PxBFrStGZDAuauWrC5KuSJ4abRg4"
+NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN = "momentum-fa852.firebaseapp.com"
+NEXT_PUBLIC_FIREBASE_PROJECT_ID = "momentum-fa852"
+NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET = "momentum-fa852.firebasestorage.app"
+NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID = "565460316123"
+NEXT_PUBLIC_FIREBASE_APP_ID = "1:565460316123:web:ba3dfc2474922787b6c1fe"

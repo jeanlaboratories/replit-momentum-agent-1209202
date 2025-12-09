@@ -1,0 +1,64 @@
+{
+  "timestamp": "2025-11-27T07:10:21.714862",
+  "suite_name": "MOMENTUM Core Test Suite v2.0",
+  "summary": {
+    "total_tests": 50,
+    "passed_tests": 44,
+    "overall_accuracy": 88.0,
+    "stability_score": 94.82
+  },
+  "latency": {
+    "avg_ms": 3638.54,
+    "p50_ms": 2168.56,
+    "p95_ms": 9442.36,
+    "p99_ms": 12403.45
+  },
+  "cost": {
+    "total_tokens": 13478,
+    "total_cost_usd": 0.0022
+  },
+  "pass_at_k": {
+    "pass@1": 88.0,
+    "pass@3": 99.83,
+    "pass@5": 100.0
+  },
+  "tool_accuracy": {
+    "generate_image": 100.0,
+    "web_search_agent": 100.0,
+    "crawl_website": 33.33,
+    "save_memory": 100.0,
+    "recall_memory": 100.0,
+    "create_event": 100.0,
+    "no_tool": 0.0
+  },
+  "category_metrics": {
+    "relevance_detection": {
+      "accuracy": 86.67,
+      "tool_selection_accuracy": 0.0,
+      "avg_latency_ms": 4278.17,
+      "tests": 15,
+      "passed": 13
+    },
+    "error_recovery": {
+      "accuracy": 80.0,
+      "tool_selection_accuracy": 0.0,
+      "avg_latency_ms": 1406.82,
+      "tests": 5,
+      "passed": 4
+    },
+    "tool_selection": {
+      "accuracy": 90.0,
+      "tool_selection_accuracy": 90.0,
+      "avg_latency_ms": 3483.13,
+      "tests": 20,
+      "passed": 18
+    },
+    "memory_persistence": {
+      "accuracy": 90.0,
+      "tool_selection_accuracy": 50.0,
+      "avg_latency_ms": 4105.78,
+      "tests": 10,
+      "passed": 9
+    }
+  }
+}

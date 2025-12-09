@@ -1,0 +1,39 @@
+
+> nextn@0.1.0 dev
+> concurrently "npm run dev:next" "npm run dev:python"
+
+[0] 
+[0] > nextn@0.1.0 dev:next
+[0] > wait-on tcp:8000 && next dev -p 5000 -H 0.0.0.0
+[0] 
+[1] 
+[1] > nextn@0.1.0 dev:python
+[1] > sh -c 'cd python_service && ./momentum/bin/python3 main.py'
+[1] 
+[0]  ⨯ Failed to start server
+[0] Error: listen EADDRINUSE: address already in use 0.0.0.0:5000
+[0]     at <unknown> (Error: listen EADDRINUSE: address already in use 0.0.0.0:5000) {
+[0]   code: 'EADDRINUSE',
+[0]   errno: -48,
+[0]   syscall: 'listen',
+[0]   address: '0.0.0.0',
+[0]   port: 5000
+[0] }
+[0] [?25h
+[0] npm run dev:next exited with code 0
+[1] INFO:momentum_agent:Initializing default InMemoryMemoryService.
+[1] INFO:momentum_agent:Initialized Firebase Admin with MOMENTUM_GOOGLE_APPLICATION_CREDENTIALS_JSON
+[1] INFO:momentum_agent:Firebase Admin initialized successfully with bucket: automl-migration-test.firebasestorage.app
+[1] INFO:__main__:Marketing agent initialized successfully
+[1] INFO:__main__:Extracted project ID from service account: automl-migration-test
+[1] INFO:google_adk.google.adk.sessions.database_session_service:Local timezone: America/New_York
+[1] INFO:session_manager:SessionManager initialized with DatabaseSessionService (app: MOMENTUM)
+[1] WARNING:google_adk.google.adk.runners:App name mismatch detected. The runner is configured with app name "MOMENTUM", but the root agent was loaded from "/Users/huguensjean/Workspace/momentum-advantage/momentum-agent/python_service/momentum/lib/python3.14/site-packages/google/adk/agents", which implies app name "agents".
+[1] INFO:__main__:MOMENTUM ADK Agent initialized with Database persistent sessions (SQLite: agent_sessions.db)
+[1] INFO:     Started server process [72908]
+[1] INFO:     Waiting for application startup.
+[1] INFO:     Application startup complete.
+[1] ERROR:    [Errno 48] error while attempting to bind on address ('127.0.0.1', 8000): [errno 48] address already in use
+[1] INFO:     Waiting for application shutdown.
+[1] INFO:     Application shutdown complete.
+[1] npm run dev:python exited with code 1

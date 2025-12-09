@@ -1,0 +1,522 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Space+Grotesk:wght@400;500;700&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 160 20% 98%;
+    --foreground: 160 10% 15%;
+    --card: 0 0% 100%;
+    --card-foreground: 160 10% 15%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 160 10% 15%;
+    --primary: 174 62% 38%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 160 20% 92%;
+    --secondary-foreground: 160 10% 15%;
+    --muted: 160 20% 92%;
+    --muted-foreground: 160 10% 40%;
+    --accent: 142 76% 45%;
+    --accent-foreground: 0 0% 100%;
+    --destructive: 0 84.2% 60.2%;
+    --destructive-foreground: 0 0% 98%;
+    --border: 160 20% 88%;
+    --input: 160 20% 94%;
+    --ring: 174 62% 38%;
+    --chart-1: 142 76% 45%;
+    --chart-2: 174 62% 38%;
+    --chart-3: 197 71% 39%;
+    --chart-4: 43 74% 66%;
+    --chart-5: 27 87% 67%;
+    --radius: 0.5rem;
+    --header-height: 4rem;
+    --sidebar-width: 16rem;
+    --sidebar-width-icon: 3rem;
+    --sidebar-background: 160 20% 99%;
+    --sidebar-foreground: 160 10% 20%;
+    --sidebar-primary: 174 62% 38%;
+    --sidebar-primary-foreground: 0 0% 100%;
+    --sidebar-accent: 160 20% 95%;
+    --sidebar-accent-foreground: 160 10% 15%;
+    --sidebar-border: 160 20% 90%;
+    --sidebar-ring: 174 62% 38%;
+  }
+
+  .dark {
+    --background: 160 15% 10%;
+    --foreground: 0 0% 98%;
+    --card: 160 15% 13%;
+    --card-foreground: 0 0% 98%;
+    --popover: 160 15% 10%;
+    --popover-foreground: 0 0% 98%;
+    --primary: 174 62% 48%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 160 15% 18%;
+    --secondary-foreground: 0 0% 98%;
+    --muted: 160 15% 18%;
+    --muted-foreground: 0 0% 65%;
+    --accent: 142 76% 52%;
+    --accent-foreground: 0 0% 100%;
+    --destructive: 0 62.8% 50%;
+    --destructive-foreground: 0 0% 98%;
+    --border: 160 15% 22%;
+    --input: 160 15% 22%;
+    --ring: 174 62% 48%;
+    --chart-1: 142 76% 52%;
+    --chart-2: 174 62% 48%;
+    --chart-3: 197 71% 39%;
+    --chart-4: 43 74% 66%;
+    --chart-5: 27 87% 67%;
+    --sidebar-background: 160 15% 10%;
+    --sidebar-foreground: 0 0% 98%;
+    --sidebar-primary: 174 62% 48%;
+    --sidebar-primary-foreground: 0 0% 100%;
+    --sidebar-accent: 160 15% 18%;
+    --sidebar-accent-foreground: 0 0% 98%;
+    --sidebar-border: 160 15% 22%;
+    --sidebar-ring: 174 62% 48%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-background text-foreground font-body;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+}
+.brand-themed {
+  --primary: var(--brand-primary, 174 62% 38%);
+  --primary-foreground: var(--brand-primary-foreground, 0 0% 100%);
+    --secondary: var(--brand-secondary, 142 76% 45%);
+    --secondary-foreground: 0 0% 100%;
+    --accent: var(--brand-accent, 280 70% 60%);
+    --accent-foreground: 0 0% 100%;
+    --background: var(--brand-background, 160 20% 98%);
+  --foreground: var(--brand-foreground, 160 10% 15%);
+    --card: var(--brand-card, 0 0% 100%);
+  --card-foreground: var(--brand-card-foreground, 160 10% 15%);
+    --popover: var(--brand-card, 0 0% 100%);
+  --popover-foreground: var(--brand-card-foreground, 160 10% 15%);
+    --muted: var(--brand-background, 160 20% 98%);
+    /* Use background as muted base */
+  --muted-foreground: var(--brand-muted-foreground, 160 10% 40%);
+    --border: var(--brand-secondary, 142 76% 45%);
+    /* Use secondary for borders to match theme */
+    --input: var(--brand-secondary, 142 76% 45%);
+    --ring: var(--brand-primary, 174 62% 38%);
+  
+    /* Sidebar overrides */
+    --sidebar-background: var(--brand-background, 160 20% 98%);
+    --sidebar-foreground: var(--brand-foreground, 160 10% 15%);
+      --sidebar-primary: var(--brand-primary, 174 62% 38%);
+      --sidebar-primary-foreground: 0 0% 100%;
+      --sidebar-accent: var(--brand-accent, 280 70% 60%);
+      --sidebar-accent-foreground: 0 0% 100%;
+      --sidebar-border: var(--brand-secondary, 142 76% 45%);
+      --sidebar-ring: var(--brand-primary, 174 62% 38%);
+    
+      /* Apply background to root when themed - Use light background, not gradient */
+        background: var(--brand-background, 160 20% 98%) !important;
+        background-attachment: fixed !important;
+        min-height: 100vh;
+  }
+
+.brand-themed body {
+  background: transparent !important;
+}
+
+/* Ensure buttons have proper hover states in branded mode */
+.brand-themed .bg-primary:hover,
+.brand-themed .bg-secondary:hover,
+.brand-themed .bg-accent:hover {
+  filter: brightness(0.9);
+  opacity: 1 !important;
+  /* Override default tailwind opacity hover if needed */
+}
+
+/* ==========================================
+   PREMIUM COMMENT SYSTEM STYLES
+   ========================================== */
+
+/* Comment System Animations */
+@keyframes comment-slide-in {
+  from {
+    opacity: 0;
+    transform: translateY(-8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes comment-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes comment-pulse-glow {
+  0%, 100% {
+    box-shadow: 0 0 0 0 hsl(var(--primary) / 0);
+  }
+  50% {
+    box-shadow: 0 0 20px 4px hsl(var(--primary) / 0.15);
+  }
+}
+
+@keyframes shimmer {
+  0% {
+    background-position: -200% 0;
+  }
+  100% {
+    background-position: 200% 0;
+  }
+}
+
+@keyframes avatar-ring-pulse {
+  0%, 100% {
+    box-shadow: 0 0 0 0 hsl(var(--primary) / 0.4);
+  }
+  50% {
+    box-shadow: 0 0 0 4px hsl(var(--primary) / 0);
+  }
+}
+
+@keyframes mention-highlight {
+  0% {
+    background-color: hsl(var(--primary) / 0.3);
+  }
+  100% {
+    background-color: hsl(var(--primary) / 0.1);
+  }
+}
+
+/* Comment Card Glass Effect */
+.comment-card-glass {
+  @apply relative overflow-hidden;
+  background: linear-gradient(
+    135deg,
+    hsl(var(--card) / 0.95) 0%,
+    hsl(var(--card) / 0.85) 50%,
+    hsl(var(--card) / 0.9) 100%
+  );
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid hsl(var(--border) / 0.5);
+  box-shadow:
+    0 4px 6px -1px hsl(var(--foreground) / 0.05),
+    0 2px 4px -2px hsl(var(--foreground) / 0.05),
+    inset 0 1px 0 0 hsl(0 0% 100% / 0.1);
+}
+
+.comment-card-glass::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 1px;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    hsl(0 0% 100% / 0.2) 50%,
+    transparent 100%
+  );
+}
+
+.comment-card-glass:hover {
+  background: linear-gradient(
+    135deg,
+    hsl(var(--card) / 1) 0%,
+    hsl(var(--card) / 0.92) 50%,
+    hsl(var(--card) / 0.96) 100%
+  );
+  border-color: hsl(var(--primary) / 0.3);
+  box-shadow:
+    0 8px 16px -4px hsl(var(--foreground) / 0.08),
+    0 4px 6px -2px hsl(var(--foreground) / 0.05),
+    inset 0 1px 0 0 hsl(0 0% 100% / 0.15);
+  transform: translateY(-1px);
+}
+
+/* Comment Thread Connector */
+.comment-thread-line {
+  @apply relative;
+}
+
+.comment-thread-line::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: linear-gradient(
+    180deg,
+    hsl(var(--primary) / 0.4) 0%,
+    hsl(var(--primary) / 0.15) 100%
+  );
+  border-radius: 2px;
+}
+
+/* Premium Avatar Ring */
+.comment-avatar-ring {
+  @apply relative;
+}
+
+.comment-avatar-ring::after {
+  content: '';
+  position: absolute;
+  inset: -2px;
+  border-radius: 50%;
+  background: linear-gradient(
+    135deg,
+    hsl(var(--primary) / 0.6) 0%,
+    hsl(var(--accent) / 0.4) 50%,
+    hsl(var(--primary) / 0.6) 100%
+  );
+  z-index: -1;
+  opacity: 0;
+  transition: opacity 0.3s ease;
+}
+
+.comment-avatar-ring:hover::after {
+  opacity: 1;
+}
+
+/* Comment Input Premium Style */
+.comment-input-premium {
+  @apply relative;
+  background: linear-gradient(
+    180deg,
+    hsl(var(--background) / 1) 0%,
+    hsl(var(--muted) / 0.3) 100%
+  );
+  border: 1px solid hsl(var(--border) / 0.6);
+  box-shadow:
+    inset 0 2px 4px hsl(var(--foreground) / 0.02),
+    0 1px 2px hsl(var(--foreground) / 0.03);
+  transition: all 0.2s ease;
+}
+
+.comment-input-premium:focus-within {
+  border-color: hsl(var(--primary) / 0.5);
+  box-shadow:
+    inset 0 2px 4px hsl(var(--foreground) / 0.02),
+    0 0 0 3px hsl(var(--primary) / 0.1),
+    0 4px 12px hsl(var(--primary) / 0.08);
+}
+
+/* Premium Badge Styles */
+.comment-badge-premium {
+  @apply relative overflow-hidden;
+  background: linear-gradient(
+    135deg,
+    hsl(var(--primary) / 0.15) 0%,
+    hsl(var(--primary) / 0.08) 100%
+  );
+  border: 1px solid hsl(var(--primary) / 0.2);
+}
+
+.comment-badge-premium::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: -100%;
+  width: 200%;
+  height: 100%;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    hsl(0 0% 100% / 0.1) 50%,
+    transparent 100%
+  );
+  animation: shimmer 3s infinite;
+}
+
+/* Mention Dropdown Premium */
+.mention-dropdown-premium {
+  @apply overflow-hidden;
+  background: linear-gradient(
+    180deg,
+    hsl(var(--card) / 1) 0%,
+    hsl(var(--card) / 0.98) 100%
+  );
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid hsl(var(--border) / 0.6);
+  box-shadow:
+    0 20px 40px -8px hsl(var(--foreground) / 0.15),
+    0 8px 16px -4px hsl(var(--foreground) / 0.1),
+    0 0 0 1px hsl(0 0% 100% / 0.05) inset;
+}
+
+.mention-item-premium {
+  @apply relative overflow-hidden transition-all duration-200;
+}
+
+.mention-item-premium:hover {
+  background: linear-gradient(
+    90deg,
+    hsl(var(--primary) / 0.08) 0%,
+    hsl(var(--primary) / 0.04) 100%
+  );
+}
+
+.mention-item-premium.selected {
+  background: linear-gradient(
+    90deg,
+    hsl(var(--primary) / 0.15) 0%,
+    hsl(var(--primary) / 0.08) 100%
+  );
+  border-left: 2px solid hsl(var(--primary));
+}
+
+/* Comment Actions Premium */
+.comment-action-btn {
+  @apply relative overflow-hidden transition-all duration-200;
+}
+
+.comment-action-btn::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(
+    circle at center,
+    hsl(var(--primary) / 0.1) 0%,
+    transparent 70%
+  );
+  opacity: 0;
+  transition: opacity 0.2s ease;
+}
+
+.comment-action-btn:hover::before {
+  opacity: 1;
+}
+
+/* Empty State Premium */
+.comment-empty-state {
+  @apply relative overflow-hidden;
+  background: linear-gradient(
+    135deg,
+    hsl(var(--muted) / 0.3) 0%,
+    hsl(var(--muted) / 0.15) 100%
+  );
+  border: 1px dashed hsl(var(--border) / 0.5);
+}
+
+.comment-empty-state::before {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 200px;
+  height: 200px;
+  background: radial-gradient(
+    circle,
+    hsl(var(--primary) / 0.05) 0%,
+    transparent 70%
+  );
+  transform: translate(-50%, -50%);
+}
+
+/* Comment Panel Header Premium */
+.comment-panel-header {
+  @apply relative;
+  background: linear-gradient(
+    180deg,
+    hsl(var(--card) / 1) 0%,
+    hsl(var(--card) / 0.95) 100%
+  );
+  border-bottom: 1px solid hsl(var(--border) / 0.4);
+}
+
+.comment-panel-header::after {
+  content: '';
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 1px;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    hsl(var(--primary) / 0.2) 50%,
+    transparent 100%
+  );
+}
+
+/* Scrollbar Styling for Comments */
+.comment-scroll-container::-webkit-scrollbar {
+  width: 6px;
+}
+
+.comment-scroll-container::-webkit-scrollbar-track {
+  background: hsl(var(--muted) / 0.3);
+  border-radius: 3px;
+}
+
+.comment-scroll-container::-webkit-scrollbar-thumb {
+  background: linear-gradient(
+    180deg,
+    hsl(var(--primary) / 0.3) 0%,
+    hsl(var(--primary) / 0.2) 100%
+  );
+  border-radius: 3px;
+}
+
+.comment-scroll-container::-webkit-scrollbar-thumb:hover {
+  background: linear-gradient(
+    180deg,
+    hsl(var(--primary) / 0.5) 0%,
+    hsl(var(--primary) / 0.3) 100%
+  );
+}
+
+/* Animation Classes */
+.animate-comment-slide-in {
+  animation: comment-slide-in 0.3s ease-out forwards;
+}
+
+.animate-comment-fade-in {
+  animation: comment-fade-in 0.2s ease-out forwards;
+}
+
+.animate-comment-pulse {
+  animation: comment-pulse-glow 2s ease-in-out infinite;
+}
+
+.animate-avatar-ring {
+  animation: avatar-ring-pulse 2s ease-in-out infinite;
+}
+
+/* Dark Mode Adjustments */
+.dark .comment-card-glass {
+  background: linear-gradient(
+    135deg,
+    hsl(var(--card) / 0.9) 0%,
+    hsl(var(--card) / 0.75) 50%,
+    hsl(var(--card) / 0.85) 100%
+  );
+  border-color: hsl(var(--border) / 0.4);
+}
+
+.dark .comment-card-glass:hover {
+  background: linear-gradient(
+    135deg,
+    hsl(var(--card) / 0.95) 0%,
+    hsl(var(--card) / 0.85) 50%,
+    hsl(var(--card) / 0.9) 100%
+  );
+}

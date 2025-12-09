@@ -1,0 +1,48 @@
+
+rules_version = '2';
+
+service firebase.storage {
+  match /b/{bucket}/o {
+    // Allow public read access to all files under the `campaigns/` path.
+    // This is needed for the `file.publicUrl()` to work.
+    // Writes are handled by the Admin SDK on the server, so client-side writes are disallowed.
+    match /campaigns/{allPaths=**} {
+      allow read;
+      allow write: if false; // Disallow client-side writes.
+    }
+
+    // Chat media uploads - allow authenticated users to upload to their own path
+    // Path format: chat_media/{brandId}/{userId}/{filename}
+    match /chat_media/{brandId}/{userId}/{filename} {
+      // Allow read for all authenticated users (to view media in chat)
+      allow read: if request.auth != null;
+      
+      // Allow write only to the user's own path
+      allow write: if request.auth != null && request.auth.uid == userId;
+    }
+
+    // Uploads - allow authenticated users to upload media
+    // Path format: uploads/{brandId}/images/{filename} or uploads/{brandId}/videos/{filename}
+    match /uploads/{brandId}/{mediaType}/{filename} {
+      allow read: if request.auth != null;
+      allow write: if request.auth != null;
+    }
+
+    // Campaign images - allow authenticated users
+    match /campaign_images/{brandId}/{purpose}/{filename} {
+      allow read: if request.auth != null;
+      allow write: if request.auth != null;
+    }
+
+    // Brand Soul artifacts - allow authenticated users
+    match /brand_soul/{brandId}/{allPaths=**} {
+      allow read: if request.auth != null;
+      allow write: if request.auth != null;
+    }
+
+    // Fallback rule - deny all other access
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}

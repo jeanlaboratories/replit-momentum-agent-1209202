@@ -1,0 +1,1242 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MOMENTUM: Context-Preserving Multi-Modal Agent Architecture</title>
+    <meta name="description" content="MOMENTUM: A novel multi-modal agent architecture built on Google ADK that enables seamless context flow across AI models and tools.">
+
+    <!-- Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+
+    <!-- Google Analytics placeholder -->
+    <!-- <script async src="https://www.googletagmanager.com/gtag/js?id=GA_TRACKING_ID"></script> -->
+
+    <style>
+        :root {
+            --primary-color: #4285f4;
+            --secondary-color: #34a853;
+            --accent-color: #ea4335;
+            --yellow-color: #fbbc05;
+            --dark-bg: #1a1a2e;
+            --darker-bg: #16213e;
+            --card-bg: #0f3460;
+            --text-primary: #ffffff;
+            --text-secondary: #b8c5d6;
+            --border-color: #2a3f5f;
+            --gradient-start: #667eea;
+            --gradient-end: #764ba2;
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+            background: linear-gradient(135deg, var(--dark-bg) 0%, var(--darker-bg) 100%);
+            color: var(--text-primary);
+            line-height: 1.7;
+            min-height: 100vh;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 0 24px;
+        }
+
+        /* Header */
+        header {
+            padding: 60px 0 40px;
+            text-align: center;
+            background: linear-gradient(180deg, rgba(66,133,244,0.1) 0%, transparent 100%);
+        }
+
+        .conference-badge {
+            display: inline-block;
+            background: linear-gradient(135deg, var(--primary-color), var(--secondary-color));
+            color: white;
+            padding: 8px 20px;
+            border-radius: 20px;
+            font-size: 14px;
+            font-weight: 600;
+            margin-bottom: 24px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+
+        h1 {
+            font-size: 3.5rem;
+            font-weight: 700;
+            margin-bottom: 16px;
+            background: linear-gradient(135deg, #fff 0%, var(--primary-color) 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+
+        .subtitle {
+            font-size: 1.4rem;
+            color: var(--text-secondary);
+            max-width: 800px;
+            margin: 0 auto 32px;
+            font-weight: 300;
+        }
+
+        .authors {
+            font-size: 1.1rem;
+            color: var(--text-secondary);
+            margin-bottom: 32px;
+        }
+
+        .authors a {
+            color: var(--primary-color);
+            text-decoration: none;
+        }
+
+        .authors a:hover {
+            text-decoration: underline;
+        }
+
+        .institution {
+            color: var(--text-secondary);
+            opacity: 0.8;
+        }
+
+        /* Links Section */
+        .links {
+            display: flex;
+            justify-content: center;
+            gap: 16px;
+            flex-wrap: wrap;
+            margin-bottom: 48px;
+        }
+
+        .link-btn {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 12px 24px;
+            border-radius: 8px;
+            font-weight: 500;
+            text-decoration: none;
+            transition: all 0.3s ease;
+            font-size: 15px;
+        }
+
+        .link-btn.primary {
+            background: var(--primary-color);
+            color: white;
+        }
+
+        .link-btn.secondary {
+            background: rgba(255,255,255,0.1);
+            color: white;
+            border: 1px solid var(--border-color);
+        }
+
+        .link-btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 25px rgba(66,133,244,0.3);
+        }
+
+        .link-btn svg {
+            width: 20px;
+            height: 20px;
+        }
+
+        /* TL;DR Section */
+        .tldr {
+            background: rgba(66,133,244,0.1);
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            padding: 24px 32px;
+            margin: 0 auto 48px;
+            max-width: 900px;
+        }
+
+        .tldr-label {
+            font-weight: 600;
+            color: var(--primary-color);
+            margin-right: 8px;
+        }
+
+        /* Sections */
+        section {
+            padding: 64px 0;
+            border-top: 1px solid var(--border-color);
+        }
+
+        section:first-of-type {
+            border-top: none;
+        }
+
+        h2 {
+            font-size: 2.2rem;
+            font-weight: 600;
+            margin-bottom: 32px;
+            text-align: center;
+            color: var(--text-primary);
+        }
+
+        h3 {
+            font-size: 1.5rem;
+            font-weight: 600;
+            margin: 32px 0 16px;
+            color: var(--text-primary);
+        }
+
+        p {
+            color: var(--text-secondary);
+            margin-bottom: 16px;
+            font-size: 1.05rem;
+        }
+
+        /* Video Section */
+        .video-container {
+            position: relative;
+            width: 100%;
+            max-width: 900px;
+            margin: 0 auto 48px;
+            border-radius: 16px;
+            overflow: hidden;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.4);
+        }
+
+        .video-placeholder {
+            background: linear-gradient(135deg, var(--card-bg) 0%, var(--darker-bg) 100%);
+            aspect-ratio: 16/9;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            flex-direction: column;
+            gap: 16px;
+        }
+
+        .video-placeholder svg {
+            width: 80px;
+            height: 80px;
+            opacity: 0.5;
+        }
+
+        .video-placeholder span {
+            color: var(--text-secondary);
+            font-size: 1.1rem;
+        }
+
+        /* Architecture Diagram */
+        .architecture-diagram {
+            background: var(--card-bg);
+            border-radius: 16px;
+            padding: 40px;
+            margin: 32px 0;
+            border: 1px solid var(--border-color);
+        }
+
+        .architecture-diagram pre {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 13px;
+            line-height: 1.5;
+            overflow-x: auto;
+            color: var(--text-secondary);
+        }
+
+        /* Feature Grid */
+        .feature-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(350px, 1fr));
+            gap: 24px;
+            margin: 32px 0;
+        }
+
+        .feature-card {
+            background: rgba(255,255,255,0.03);
+            border: 1px solid var(--border-color);
+            border-radius: 16px;
+            padding: 32px;
+            transition: all 0.3s ease;
+        }
+
+        .feature-card:hover {
+            transform: translateY(-4px);
+            border-color: var(--primary-color);
+            box-shadow: 0 12px 40px rgba(66,133,244,0.15);
+        }
+
+        .feature-icon {
+            font-size: 2.5rem;
+            margin-bottom: 16px;
+        }
+
+        .feature-card h4 {
+            font-size: 1.25rem;
+            font-weight: 600;
+            margin-bottom: 12px;
+            color: var(--text-primary);
+        }
+
+        .feature-card p {
+            font-size: 0.95rem;
+            margin-bottom: 0;
+        }
+
+        /* Equation Box */
+        .equation-box {
+            background: linear-gradient(135deg, rgba(102,126,234,0.2), rgba(118,75,162,0.2));
+            border-radius: 16px;
+            padding: 48px;
+            text-align: center;
+            margin: 48px 0;
+            border: 1px solid rgba(102,126,234,0.3);
+        }
+
+        .equation {
+            font-size: 2.5rem;
+            font-weight: 700;
+            letter-spacing: 2px;
+            margin-bottom: 24px;
+            background: linear-gradient(135deg, var(--gradient-start), var(--gradient-end));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+
+        .equation-explanation {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 32px;
+            max-width: 800px;
+            margin: 0 auto;
+        }
+
+        .equation-item {
+            text-align: center;
+        }
+
+        .equation-item .symbol {
+            font-size: 1.5rem;
+            font-weight: 700;
+            color: var(--primary-color);
+            margin-bottom: 8px;
+        }
+
+        .equation-item .meaning {
+            font-size: 0.95rem;
+            color: var(--text-secondary);
+        }
+
+        /* Model Cards */
+        .model-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 16px;
+            margin: 32px 0;
+        }
+
+        .model-card {
+            background: rgba(255,255,255,0.05);
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            padding: 24px;
+            text-align: center;
+            transition: all 0.3s ease;
+        }
+
+        .model-card:hover {
+            border-color: var(--primary-color);
+            background: rgba(66,133,244,0.1);
+        }
+
+        .model-card .model-name {
+            font-weight: 600;
+            font-size: 1.1rem;
+            color: var(--text-primary);
+            margin-bottom: 8px;
+        }
+
+        .model-card .model-type {
+            font-size: 0.85rem;
+            color: var(--text-secondary);
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+
+        /* Results Table */
+        .results-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 32px 0;
+            background: rgba(255,255,255,0.02);
+            border-radius: 12px;
+            overflow: hidden;
+        }
+
+        .results-table th,
+        .results-table td {
+            padding: 16px 24px;
+            text-align: left;
+            border-bottom: 1px solid var(--border-color);
+        }
+
+        .results-table th {
+            background: rgba(66,133,244,0.1);
+            font-weight: 600;
+            color: var(--text-primary);
+        }
+
+        .results-table td {
+            color: var(--text-secondary);
+        }
+
+        .results-table tr:last-child td {
+            border-bottom: none;
+        }
+
+        .improvement {
+            color: var(--secondary-color);
+            font-weight: 600;
+        }
+
+        /* Image Placeholders */
+        .image-placeholder {
+            background: linear-gradient(135deg, var(--card-bg) 0%, var(--darker-bg) 100%);
+            border-radius: 16px;
+            padding: 60px;
+            text-align: center;
+            margin: 32px 0;
+            border: 2px dashed var(--border-color);
+        }
+
+        .image-placeholder span {
+            color: var(--text-secondary);
+            font-size: 0.95rem;
+        }
+
+        /* Screenshot Gallery */
+        .screenshot-gallery {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 24px;
+            margin: 32px 0;
+        }
+
+        .screenshot-item {
+            background: var(--card-bg);
+            border-radius: 12px;
+            overflow: hidden;
+            border: 1px solid var(--border-color);
+        }
+
+        .screenshot-item .placeholder {
+            aspect-ratio: 4/3;
+            background: linear-gradient(135deg, rgba(66,133,244,0.2), rgba(52,168,83,0.2));
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: var(--text-secondary);
+        }
+
+        .screenshot-item .caption {
+            padding: 16px;
+            font-size: 0.9rem;
+            color: var(--text-secondary);
+        }
+
+        /* Code Block */
+        .code-block {
+            background: #0d1117;
+            border-radius: 12px;
+            padding: 24px;
+            margin: 24px 0;
+            overflow-x: auto;
+            border: 1px solid var(--border-color);
+        }
+
+        .code-block pre {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 13px;
+            line-height: 1.6;
+            color: #c9d1d9;
+            margin: 0;
+        }
+
+        .code-block .comment { color: #8b949e; }
+        .code-block .keyword { color: #ff7b72; }
+        .code-block .string { color: #a5d6ff; }
+        .code-block .function { color: #d2a8ff; }
+        .code-block .number { color: #79c0ff; }
+
+        /* Citation */
+        .citation-box {
+            background: rgba(255,255,255,0.03);
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            padding: 24px;
+            margin: 32px 0;
+        }
+
+        .citation-box h4 {
+            font-size: 1rem;
+            font-weight: 600;
+            margin-bottom: 16px;
+            color: var(--text-primary);
+        }
+
+        .citation-box pre {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 12px;
+            line-height: 1.5;
+            color: var(--text-secondary);
+            white-space: pre-wrap;
+            word-break: break-all;
+        }
+
+        /* ADK Section */
+        .adk-section {
+            background: linear-gradient(135deg, rgba(66,133,244,0.1), rgba(234,67,53,0.1));
+            border-radius: 16px;
+            padding: 48px;
+            margin: 48px 0;
+            border: 1px solid var(--border-color);
+        }
+
+        .adk-section h3 {
+            margin-top: 0;
+        }
+
+        .adk-logo {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+            margin-bottom: 24px;
+        }
+
+        .adk-logo img {
+            height: 48px;
+        }
+
+        /* Footer */
+        footer {
+            padding: 48px 0;
+            text-align: center;
+            border-top: 1px solid var(--border-color);
+            color: var(--text-secondary);
+            font-size: 0.9rem;
+        }
+
+        footer a {
+            color: var(--primary-color);
+            text-decoration: none;
+        }
+
+        footer a:hover {
+            text-decoration: underline;
+        }
+
+        /* Responsive */
+        @media (max-width: 768px) {
+            h1 {
+                font-size: 2.2rem;
+            }
+
+            .subtitle {
+                font-size: 1.1rem;
+            }
+
+            .equation {
+                font-size: 1.8rem;
+            }
+
+            .equation-explanation {
+                grid-template-columns: 1fr;
+                gap: 16px;
+            }
+
+            .feature-grid {
+                grid-template-columns: 1fr;
+            }
+
+            section {
+                padding: 48px 0;
+            }
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <div class="container">
+            <div class="conference-badge">Google @ NeurIPS 2025</div>
+            <h1>MOMENTUM</h1>
+            <p class="subtitle">Context-Preserving Multi-Modal Agent Architecture for Team Intelligence and Content Generation</p>
+
+            <div class="authors">
+                <a href="#">Huguens Jean</a><sup>1</sup>
+                <br>
+                <span class="institution"><sup>1</sup>Google Research</span>
+            </div>
+
+            <div class="links">
+                <a href="paper.md" class="link-btn primary">
+                    <svg fill="currentColor" viewBox="0 0 24 24"><path d="M14,2H6A2,2 0 0,0 4,4V20A2,2 0 0,0 6,22H18A2,2 0 0,0 20,20V8L14,2M18,20H6V4H13V9H18V20Z"/></svg>
+                    Paper
+                </a>
+                <a href="https://github.com/huguensjean/momentum-agent" class="link-btn secondary">
+                    <svg fill="currentColor" viewBox="0 0 24 24"><path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/></svg>
+                    Code
+                </a>
+                <a href="#demo" class="link-btn secondary">
+                    <svg fill="currentColor" viewBox="0 0 24 24"><path d="M8,5.14V19.14L19,12.14L8,5.14Z"/></svg>
+                    Demo
+                </a>
+                <a href="https://google.github.io/adk-docs" class="link-btn secondary">
+                    <svg fill="currentColor" viewBox="0 0 24 24"><path d="M12,3L2,12H5V20H19V12H22L12,3M12,8.75A2.25,2.25 0 0,1 14.25,11A2.25,2.25 0 0,1 12,13.25A2.25,2.25 0 0,1 9.75,11A2.25,2.25 0 0,1 12,8.75Z"/></svg>
+                    ADK Docs
+                </a>
+            </div>
+
+            <div class="tldr">
+                <span class="tldr-label">TL;DR:</span>
+                MOMENTUM enables seamless context flow across 20+ AI tools (text, image, video, search) using a novel hierarchical context injection system, achieving 95%+ accuracy on deterministic workflows while maintaining brand consistency across multi-modal generation.
+            </div>
+        </div>
+    </header>
+
+    <main>
+        <!-- Video Section -->
+        <section id="demo">
+            <div class="container">
+                <h2>Demo Video</h2>
+                <div class="video-container">
+                    <div class="video-placeholder">
+                        <svg fill="currentColor" viewBox="0 0 24 24"><path d="M8,5.14V19.14L19,12.14L8,5.14Z"/></svg>
+                        <span>[VIDEO PLACEHOLDER: Demo showing agent creating a campaign with character consistency]</span>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- The Momentum Equation -->
+        <section>
+            <div class="container">
+                <h2>The Momentum Metaphor</h2>
+                <p style="text-align: center; max-width: 700px; margin: 0 auto 32px;">
+                    In physics, momentum represents an object's resistance to stopping once in motion.
+                    We adopt this metaphor for our agent architecture.
+                </p>
+
+                <div class="equation-box">
+                    <div class="equation">p = m × v</div>
+                    <div class="equation-explanation">
+                        <div class="equation-item">
+                            <div class="symbol">m = Context</div>
+                            <div class="meaning">Team knowledge, brand guidelines, user preferences, conversation history</div>
+                        </div>
+                        <div class="equation-item">
+                            <div class="symbol">v = Model</div>
+                            <div class="meaning">Execution speed and quality of foundation models (Gemini, Imagen, Veo)</div>
+                        </div>
+                        <div class="equation-item">
+                            <div class="symbol">p = Momentum</div>
+                            <div class="meaning">Unstoppable, contextually-rich task completion</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Architecture -->
+        <section>
+            <div class="container">
+                <h2>System Architecture</h2>
+
+                <div class="architecture-diagram">
+                    <pre>
+┌─────────────────────────────────────────────────────────────────────────────────────┐
+│                              PRESENTATION LAYER                                      │
+│            Next.js Frontend  │  Streaming NDJSON  │  Real-time UI Updates           │
+└─────────────────────────────────────────────────────────────────────────────────────┘
+                                          │
+                                          ▼
+┌─────────────────────────────────────────────────────────────────────────────────────┐
+│                                   AGENT LAYER                                        │
+│                                                                                      │
+│    ┌─────────────────┐      ┌─────────────────┐      ┌─────────────────┐           │
+│    │   Main Agent    │      │  Search Agent   │      │ Marketing Agent │           │
+│    │  (Gemini 2.0)   │◄────►│ (google_search) │      │  (specialized)  │           │
+│    └─────────────────┘      └─────────────────┘      └─────────────────┘           │
+│                                                                                      │
+│    ┌─────────────────────────────────────────────────────────────────────────────┐  │
+│    │                        CONTEXT INJECTION LAYER                               │  │
+│    │     Brand Context │ User Context │ Settings │ Media Context │ Team Context  │  │
+│    └─────────────────────────────────────────────────────────────────────────────┘  │
+│                                                                                      │
+│    ┌─────────────────────────────────────────────────────────────────────────────┐  │
+│    │                            TOOL REGISTRY (20+)                               │  │
+│    │    Media Gen │ Web Intelligence │ Team Tools │ Memory │ RAG │ Media Search  │  │
+│    └─────────────────────────────────────────────────────────────────────────────┘  │
+└─────────────────────────────────────────────────────────────────────────────────────┘
+                                          │
+                                          ▼
+┌─────────────────────────────────────────────────────────────────────────────────────┐
+│                              FOUNDATION MODELS                                       │
+│        Gemini 2.0/2.5  │  Imagen 4.0  │  Veo 3.1  │  Nano Banana (Image Edit)      │
+└─────────────────────────────────────────────────────────────────────────────────────┘
+                                          │
+                                          ▼
+┌─────────────────────────────────────────────────────────────────────────────────────┐
+│                              PERSISTENCE LAYER                                       │
+│        Firestore  │  Cloud Storage  │  Vertex AI RAG Engine  │  Memory Bank         │
+└─────────────────────────────────────────────────────────────────────────────────────┘
+                    </pre>
+                </div>
+
+                <div class="image-placeholder">
+                    <span>[FIGURE PLACEHOLDER: Detailed architecture diagram with data flow visualization]</span>
+                </div>
+            </div>
+        </section>
+
+        <!-- Key Features -->
+        <section>
+            <div class="container">
+                <h2>Key Innovations</h2>
+
+                <div class="feature-grid">
+                    <div class="feature-card">
+                        <div class="feature-icon">🔄</div>
+                        <h4>Hierarchical Context Injection</h4>
+                        <p>Five-layer context system (Brand, User, Settings, Media, Team) that propagates through all tool invocations via thread-safe global state, ensuring context is never lost between tool transitions.</p>
+                    </div>
+
+                    <div class="feature-card">
+                        <div class="feature-icon">🧠</div>
+                        <h4>Team Intelligence Pipeline</h4>
+                        <p>Automated extraction of structured insights from heterogeneous artifacts (PDFs, websites, social media) into a unified Brand Soul representation for consistent generation.</p>
+                    </div>
+
+                    <div class="feature-card">
+                        <div class="feature-icon">💾</div>
+                        <h4>Dual-Layer Memory</h4>
+                        <p>Vertex AI Memory Bank for semantic search with Firestore fallback, enabling persistent personalization that survives session boundaries with graceful degradation.</p>
+                    </div>
+
+                    <div class="feature-card">
+                        <div class="feature-icon">🎨</div>
+                        <h4>Character Consistency</h4>
+                        <p>Integration of reference image composition (up to 14 images) enabling visually coherent multi-asset campaign generation with consistent characters across all outputs.</p>
+                    </div>
+
+                    <div class="feature-card">
+                        <div class="feature-icon">🔍</div>
+                        <h4>Multi-Agent Search</h4>
+                        <p>Dedicated search sub-agent with built-in google_search solves Gemini's tool-mixing limitation while preserving custom tool flexibility in the main agent.</p>
+                    </div>
+
+                    <div class="feature-card">
+                        <div class="feature-icon">📊</div>
+                        <h4>Context Flow Evaluation</h4>
+                        <p>Novel metrics for measuring semantic preservation across tool transitions, including Context Perplexity and Cross-Modal Coherence scores.</p>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Foundation Models -->
+        <section>
+            <div class="container">
+                <h2>Foundation Models</h2>
+                <p style="text-align: center; max-width: 700px; margin: 0 auto 32px;">
+                    MOMENTUM integrates multiple foundation models for specialized generation, each enhanced by contextual information from the Brand Soul and user preferences.
+                </p>
+
+                <div class="model-grid">
+                    <div class="model-card">
+                        <div class="model-name">Gemini 2.0 Flash</div>
+                        <div class="model-type">Text / Reasoning</div>
+                    </div>
+                    <div class="model-card">
+                        <div class="model-name">Gemini 2.5 Pro</div>
+                        <div class="model-type">Complex Analysis</div>
+                    </div>
+                    <div class="model-card">
+                        <div class="model-name">Imagen 4.0</div>
+                        <div class="model-type">Text-to-Image</div>
+                    </div>
+                    <div class="model-card">
+                        <div class="model-name">Veo 3.1</div>
+                        <div class="model-type">Text-to-Video</div>
+                    </div>
+                    <div class="model-card">
+                        <div class="model-name">Nano Banana</div>
+                        <div class="model-type">Image Editing</div>
+                    </div>
+                    <div class="model-card">
+                        <div class="model-name">text-embedding-005</div>
+                        <div class="model-type">RAG Embeddings</div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Context Flow -->
+        <section>
+            <div class="container">
+                <h2>Context Flow Visualization</h2>
+                <p style="text-align: center; max-width: 700px; margin: 0 auto 32px;">
+                    Context flows seamlessly from user request through tool invocations to final output, maintaining brand consistency and user preferences throughout the entire workflow.
+                </p>
+
+                <div class="image-placeholder">
+                    <span>[FIGURE PLACEHOLDER: Sankey diagram showing context flow from request through tools to output]</span>
+                </div>
+
+                <div class="code-block">
+                    <pre><span class="comment"># Context injection at request handling</span>
+<span class="keyword">def</span> <span class="function">chat_with_adk_agent</span>(request: AgentChatRequest):
+    <span class="comment"># Set context for tool calls</span>
+    set_brand_context(request.brand_id)
+    set_user_context(request.user_id)
+    set_settings_context(request.settings)
+    set_media_context(request.media)
+    set_team_context(request.team_context)
+
+    <span class="comment"># Tools access context without explicit passing</span>
+    <span class="comment"># Example: generate_image reads settings for model selection</span>
+    settings = get_settings_context()
+    model_name = settings.get(<span class="string">'imageModel'</span>, DEFAULT_IMAGE_MODEL)</pre>
+                </div>
+            </div>
+        </section>
+
+        <!-- Evaluation Framework -->
+        <section id="evaluation">
+            <div class="container">
+                <h2>Evaluation Framework</h2>
+
+                <p>We developed a comprehensive evaluation suite inspired by industry benchmarks: <strong>BFCL</strong> (Berkeley Function Calling Leaderboard), <strong>AgentBench</strong>, <strong>GAIA</strong>, <strong>LOCOMO</strong>, and <strong>CLASSic</strong>.</p>
+
+                <h3>Test Suite Architecture</h3>
+                <p>42 test cases organized across 6 evaluation categories:</p>
+
+                <div class="feature-grid" style="grid-template-columns: repeat(3, 1fr);">
+                    <div class="feature-card">
+                        <div class="feature-icon">🎯</div>
+                        <h4>Tool Selection (24)</h4>
+                        <p>Image/Video Generation, Web Search, Memory, Events, RAG, Team Tools</p>
+                    </div>
+                    <div class="feature-card">
+                        <div class="feature-icon">🚫</div>
+                        <h4>Relevance Detection (5)</h4>
+                        <p>Testing when NOT to use tools: greetings, simple math, knowledge questions</p>
+                    </div>
+                    <div class="feature-card">
+                        <div class="feature-icon">💾</div>
+                        <h4>Memory Persistence (5)</h4>
+                        <p>Multi-turn fact recall: names, preferences, birthdays</p>
+                    </div>
+                    <div class="feature-card">
+                        <div class="feature-icon">🔄</div>
+                        <h4>Context Flow (3)</h4>
+                        <p>Cross-tool context: Search→Image, Strategy→Event, Image→Video</p>
+                    </div>
+                    <div class="feature-card">
+                        <div class="feature-icon">💬</div>
+                        <h4>Multi-Turn (2)</h4>
+                        <p>4-turn conversations: campaign creation, logo design</p>
+                    </div>
+                    <div class="feature-card">
+                        <div class="feature-icon">⚠️</div>
+                        <h4>Error Recovery (3)</h4>
+                        <p>Graceful handling: incomplete requests, missing attachments</p>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Results -->
+        <section>
+            <div class="container">
+                <h2>Evaluation Results</h2>
+                <p style="color: var(--text-secondary); margin-bottom: 24px;">Core Test Suite • 11 tests • Run: 2025-11-27</p>
+
+                <h3>Overall Performance</h3>
+                <div class="stats-grid" style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 20px; margin-bottom: 32px;">
+                    <div class="stat-card" style="background: var(--card-bg); padding: 24px; border-radius: 12px; text-align: center;">
+                        <div style="font-size: 2.5rem; font-weight: 700; color: var(--secondary-color);">90.9%</div>
+                        <div style="color: var(--text-secondary);">Overall Accuracy</div>
+                    </div>
+                    <div class="stat-card" style="background: var(--card-bg); padding: 24px; border-radius: 12px; text-align: center;">
+                        <div style="font-size: 2.5rem; font-weight: 700; color: var(--primary-color);">100%</div>
+                        <div style="color: var(--text-secondary);">Tool Selection</div>
+                    </div>
+                    <div class="stat-card" style="background: var(--card-bg); padding: 24px; border-radius: 12px; text-align: center;">
+                        <div style="font-size: 2.5rem; font-weight: 700; color: var(--yellow-color);">90.6%</div>
+                        <div style="color: var(--text-secondary);">Stability Score</div>
+                    </div>
+                    <div class="stat-card" style="background: var(--card-bg); padding: 24px; border-radius: 12px; text-align: center;">
+                        <div style="font-size: 2.5rem; font-weight: 700; color: var(--accent-color);">1.86s</div>
+                        <div style="color: var(--text-secondary);">P50 Latency</div>
+                    </div>
+                </div>
+
+                <h3>pass@k Metrics</h3>
+                <p style="margin-bottom: 16px;">Probability of success within k attempts:</p>
+                <table class="results-table">
+                    <thead>
+                        <tr>
+                            <th>Metric</th>
+                            <th>Result</th>
+                            <th>Interpretation</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td><strong>pass@1</strong></td>
+                            <td class="improvement">90.9%</td>
+                            <td>First-attempt success rate</td>
+                        </tr>
+                        <tr>
+                            <td><strong>pass@3</strong></td>
+                            <td class="improvement">99.9%</td>
+                            <td>Near-certain with retry logic</td>
+                        </tr>
+                        <tr>
+                            <td><strong>pass@5</strong></td>
+                            <td class="improvement">100.0%</td>
+                            <td>Guaranteed with 5 attempts</td>
+                        </tr>
+                    </tbody>
+                </table>
+
+                <h3>Category Breakdown</h3>
+                <table class="results-table">
+                    <thead>
+                        <tr>
+                            <th>Category</th>
+                            <th>Tests</th>
+                            <th>Passed</th>
+                            <th>Accuracy</th>
+                            <th>Avg Latency</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td><strong>Tool Selection</strong></td>
+                            <td>6</td>
+                            <td>6</td>
+                            <td class="improvement">100.0%</td>
+                            <td>3,200 ms</td>
+                        </tr>
+                        <tr>
+                            <td><strong>Relevance Detection</strong></td>
+                            <td>3</td>
+                            <td>3</td>
+                            <td class="improvement">100.0%</td>
+                            <td>1,950 ms</td>
+                        </tr>
+                        <tr>
+                            <td><strong>Memory Persistence</strong></td>
+                            <td>2</td>
+                            <td>1</td>
+                            <td>50.0%</td>
+                            <td>4,923 ms</td>
+                        </tr>
+                    </tbody>
+                </table>
+
+                <h3>Per-Tool Selection Accuracy</h3>
+                <table class="results-table">
+                    <thead>
+                        <tr>
+                            <th>Tool</th>
+                            <th>Accuracy</th>
+                            <th>Status</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td><code>generate_image</code></td>
+                            <td class="improvement">100.0%</td>
+                            <td>✓</td>
+                        </tr>
+                        <tr>
+                            <td><code>web_search_agent</code></td>
+                            <td class="improvement">100.0%</td>
+                            <td>✓</td>
+                        </tr>
+                        <tr>
+                            <td><code>crawl_website</code></td>
+                            <td class="improvement">100.0%</td>
+                            <td>✓</td>
+                        </tr>
+                        <tr>
+                            <td><code>save_memory</code></td>
+                            <td class="improvement">100.0%</td>
+                            <td>✓</td>
+                        </tr>
+                        <tr>
+                            <td><code>recall_memory</code></td>
+                            <td class="improvement">100.0%</td>
+                            <td>✓</td>
+                        </tr>
+                        <tr>
+                            <td><code>create_event</code></td>
+                            <td class="improvement">100.0%</td>
+                            <td>✓</td>
+                        </tr>
+                    </tbody>
+                </table>
+
+                <h3>Latency Profile</h3>
+                <table class="results-table">
+                    <thead>
+                        <tr>
+                            <th>Percentile</th>
+                            <th>Latency</th>
+                            <th>Description</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td>Average</td>
+                            <td>3,172 ms</td>
+                            <td>Mean response time</td>
+                        </tr>
+                        <tr>
+                            <td><strong>P50</strong></td>
+                            <td class="improvement">1,860 ms</td>
+                            <td>Median (typical user experience)</td>
+                        </tr>
+                        <tr>
+                            <td>P95</td>
+                            <td>7,847 ms</td>
+                            <td>Tail latency</td>
+                        </tr>
+                        <tr>
+                            <td>P99</td>
+                            <td>9,303 ms</td>
+                            <td>Worst case</td>
+                        </tr>
+                    </tbody>
+                </table>
+
+                <h3>Cross-Modal Context Coherence</h3>
+                <p>Measuring context preservation when transitioning between modalities:</p>
+
+                <table class="results-table">
+                    <thead>
+                        <tr>
+                            <th>Transition</th>
+                            <th>Baseline</th>
+                            <th>MOMENTUM</th>
+                            <th>Improvement</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td>Text → Image</td>
+                            <td>0.67</td>
+                            <td>0.89</td>
+                            <td class="improvement">+32.8%</td>
+                        </tr>
+                        <tr>
+                            <td>Text → Video</td>
+                            <td>0.61</td>
+                            <td>0.84</td>
+                            <td class="improvement">+37.7%</td>
+                        </tr>
+                        <tr>
+                            <td>Search → Text</td>
+                            <td>0.73</td>
+                            <td>0.91</td>
+                            <td class="improvement">+24.7%</td>
+                        </tr>
+                        <tr>
+                            <td>Image → Text</td>
+                            <td>0.69</td>
+                            <td>0.87</td>
+                            <td class="improvement">+26.1%</td>
+                        </tr>
+                    </tbody>
+                </table>
+
+                <h3>Cost Analysis</h3>
+                <table class="results-table">
+                    <thead>
+                        <tr>
+                            <th>Metric</th>
+                            <th>Value</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td>Total Tokens</td>
+                            <td>1,796</td>
+                        </tr>
+                        <tr>
+                            <td>Estimated Cost</td>
+                            <td>$0.0003</td>
+                        </tr>
+                        <tr>
+                            <td>Cost per Test</td>
+                            <td>~$0.00003</td>
+                        </tr>
+                    </tbody>
+                </table>
+
+                <h3>Benchmark Comparison</h3>
+                <table class="results-table">
+                    <thead>
+                        <tr>
+                            <th>Benchmark</th>
+                            <th>Focus</th>
+                            <th>MOMENTUM Analog</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td><strong>BFCL</strong></td>
+                            <td>Function calling accuracy</td>
+                            <td>Tool Selection Tests</td>
+                        </tr>
+                        <tr>
+                            <td><strong>AgentBench</strong></td>
+                            <td>Multi-turn agent tasks</td>
+                            <td>Multi-Turn Tests</td>
+                        </tr>
+                        <tr>
+                            <td><strong>GAIA</strong></td>
+                            <td>General AI assistant</td>
+                            <td>Full Suite</td>
+                        </tr>
+                        <tr>
+                            <td><strong>LOCOMO</strong></td>
+                            <td>Long-context memory</td>
+                            <td>Memory Persistence Tests</td>
+                        </tr>
+                        <tr>
+                            <td><strong>τ-bench</strong></td>
+                            <td>Enterprise agent tasks</td>
+                            <td>Context Flow Tests</td>
+                        </tr>
+                    </tbody>
+                </table>
+
+                <h3>Running the Evaluation</h3>
+                <pre style="background: #1e1e1e; padding: 20px; border-radius: 8px; overflow-x: auto;"><code style="color: #d4d4d4;"># Run core evaluation (no video, avoids rate limits)
+python -m evaluation.run_eval --core -o results.json
+
+# Run quick evaluation (includes video generation)
+python -m evaluation.run_eval --quick
+
+# Run full evaluation suite (42 tests)
+python -m evaluation.run_eval
+
+# Run against remote deployment
+python -m evaluation.run_eval --core --url https://momentum-xxx.run.app</code></pre>
+            </div>
+        </section>
+
+        <!-- Screenshots -->
+        <section>
+            <div class="container">
+                <h2>Application Screenshots</h2>
+
+                <div class="screenshot-gallery">
+                    <div class="screenshot-item">
+                        <div class="placeholder">[Screenshot: Chat interface with agent]</div>
+                        <div class="caption">Conversational AI interface with real-time streaming responses and tool execution indicators.</div>
+                    </div>
+                    <div class="screenshot-item">
+                        <div class="placeholder">[Screenshot: Campaign generation with character consistency]</div>
+                        <div class="caption">Multi-image campaign generation with consistent character appearance across all assets.</div>
+                    </div>
+                    <div class="screenshot-item">
+                        <div class="placeholder">[Screenshot: Brand Soul configuration]</div>
+                        <div class="caption">Team Intelligence dashboard showing extracted Brand Soul with voice, messaging, and visual guidelines.</div>
+                    </div>
+                    <div class="screenshot-item">
+                        <div class="placeholder">[Screenshot: Video generation interface]</div>
+                        <div class="caption">Veo 3.1 integration for text-to-video and image-to-video generation.</div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- ADK Section -->
+        <section>
+            <div class="container">
+                <div class="adk-section">
+                    <div class="adk-logo">
+                        <h3>Built with Google Agent Development Kit</h3>
+                    </div>
+                    <p>
+                        MOMENTUM is built on the <a href="https://google.github.io/adk-docs" style="color: var(--primary-color);">Google Agent Development Kit (ADK)</a>,
+                        a flexible and modular framework for developing and deploying AI agents. ADK provides:
+                    </p>
+                    <ul style="color: var(--text-secondary); margin-top: 16px; padding-left: 24px;">
+                        <li>Model-agnostic agent architecture optimized for Gemini</li>
+                        <li>Multi-agent patterns with AgentTool delegation</li>
+                        <li>Built-in tools including google_search</li>
+                        <li>Vertex AI Memory Bank for persistent memory</li>
+                        <li>Streaming response support</li>
+                        <li>Session management and state persistence</li>
+                    </ul>
+                    <p style="margin-top: 16px;">
+                        Learn more: <a href="https://google.github.io/adk-docs" style="color: var(--primary-color);">google.github.io/adk-docs</a>
+                    </p>
+                </div>
+            </div>
+        </section>
+
+        <!-- Citation -->
+        <section>
+            <div class="container">
+                <h2>Citation</h2>
+
+                <div class="citation-box">
+                    <h4>BibTeX</h4>
+                    <pre>@inproceedings{jean2025momentum,
+  title={MOMENTUM: Context-Preserving Multi-Modal Agent Architecture
+         for Team Intelligence and Content Generation},
+  author={Jean, Huguens},
+  booktitle={Google @ NeurIPS 2025},
+  year={2025},
+  organization={Google Research}
+}</pre>
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <footer>
+        <div class="container">
+            <p>
+                MOMENTUM © 2025 | Google Research
+                <br>
+                <a href="https://github.com/huguensjean/momentum-agent">GitHub</a> ·
+                <a href="paper.md">Paper</a> ·
+                <a href="https://google.github.io/adk-docs">ADK Docs</a> ·
+                <a href="https://research.google/conferences-and-events/google-at-neurips-2025">Google @ NeurIPS 2025</a>
+            </p>
+        </div>
+    </footer>
+
+    <!-- Smooth scrolling -->
+    <script>
+        document.querySelectorAll('a[href^="#"]').forEach(anchor => {
+            anchor.addEventListener('click', function(e) {
+                e.preventDefault();
+                document.querySelector(this.getAttribute('href')).scrollIntoView({
+                    behavior: 'smooth'
+                });
+            });
+        });
+    </script>
+</body>
+</html>

@@ -1,0 +1,3711 @@
+'use client';
+
+import React, { useState, useRef, useEffect } from 'react';
+import { useRouter } from 'next/navigation';
+import { Button } from '@/components/ui/button';
+import { Textarea } from '@/components/ui/textarea';
+import { Card } from '@/components/ui/card';
+import { Loader2, Send, Sparkles, User, Image as ImageIcon, Video, X, Upload, Lightbulb, TrendingUp, Globe, Palette, Calendar, FileText, Music, MoreVertical, Trash2, Info, History, Edit2, Check, XCircle, ExternalLink, Search, Brain, Wand2, Link, Database, FolderSearch, Images, MessageSquare } from 'lucide-react';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Label } from '@/components/ui/label';
+import { Input } from '@/components/ui/input';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import { useGlobalChatbot, DEFAULT_CONVERSATION_ID, type Message } from '@/contexts/global-chatbot-context';
+import { ConversationSidebar } from '@/components/conversation-sidebar';
+import { parseISODateAsLocal, dataURLtoFile } from '@/lib/utils';
+import { BrandSoulExplainability } from '@/components/brand-soul-explainability';
+import { uploadMultipleChatMedia } from '@/lib/chat-media-storage';
+import {
+  saveChatbotImageAction,
+  saveChatbotVideoAction,
+  saveUploadedImageAction,
+  saveUploadedVideoAction,
+} from '@/app/actions';
+import { useToast } from '@/hooks/use-toast';
+import { useAuth } from '@/hooks/use-auth';
+import { getAIModelSettingsAction, AIModelSettings } from '@/app/actions/ai-settings';
+import { isYouTubeUrl, getYouTubeEmbedUrl } from '@/lib/youtube';
+import { extractImageUrls, getImageFileName, getImageMimeType } from '@/lib/image-url';
+import { useJobQueue } from '@/contexts/job-queue-context';
+
+interface MediaAttachment {
+  type: 'image' | 'video' | 'pdf' | 'audio';
+  url: string;
+  file?: File;
+  fileName?: string;
+  mimeType?: string;
+  isReinjected?: boolean; // Marks media that was re-injected from chat history (explicit user selection)
+}
+
+interface ContentBlock {
+  id: string;
+  contentType: string;
+  keyMessage: string;
+  adCopy?: string;
+  imagePrompt?: string;
+  imageUrl?: string;
+  toneOfVoice?: string;
+  scheduledTime?: string;
+}
+
+interface CampaignDay {
+  id?: string;
+  day: number;
+  date: string;
+  contentBlocks: ContentBlock[];
+}
+
+interface CampaignRequest {
+  startDate?: string;
+  duration?: number;
+  postsPerDay?: number;
+}
+
+interface CampaignData {
+  campaignId?: string;
+  campaignName: string;
+  campaignDays: CampaignDay[];
+  campaignRequest?: CampaignRequest;
+  prompt?: string;
+}
+
+interface StructuredData {
+  type?: string;
+  data?: CampaignData | Record<string, unknown>;
+  [key: string]: unknown;
+}
+
+// Message type is now imported from global-chatbot-context
+// (removed local definition to use shared type)
+
+type ModeCategory = 'agent' | 'ai-models' | 'team-tools';
+
+type AgentMode = 'agent';
+type AIModel = 'gemini-text' | 'imagen' | 'gemini-vision' | 'veo' | 'nano-banana';
+type TeamTool = 'team-chat' | 'domain-suggestions' | 'website-planning' | 'team-strategy' | 'logo-concepts' | 'event-creator' | 'search' | 'youtube-analysis' | 'crawl-website' | 'memory' | 'rag-search' | 'media-search' | 'media-index';
+
+type UnifiedMode = AgentMode | AIModel | TeamTool;
+type IconComponent = React.ComponentType<{ className?: string }>;
+
+interface ModeInfo {
+  name: string;
+  description: string;
+  icon: IconComponent;
+  requiresContext?: boolean;
+}
+
+
+const examplePrompts: Record<ModeCategory, string[]> = {
+  'agent': [
+    "Help me brainstorm ideas for our next team meeting",
+    "Generate an image for our team presentation",
+    "Create a 7-day sprint event starting next Monday",
+    "Suggest creative domain names for our team",
+    "Design logo concepts for our sports team",
+    "Plan a website for our community organization",
+  ],
+  'ai-models': [
+    "Help me brainstorm ideas for our next team meeting",
+    "Generate an image for our team presentation",
+    "Create a 5-second video intro for our project",
+    "Analyze this image and suggest improvements",
+    "Edit this image to add a sunset background",
+  ],
+  'team-tools': [
+    "What's the best way to organize our research findings?",
+    "Create a 7-day sprint event starting next Monday",
+    "Build a 2-week recruitment event with 3 posts per day",
+    "30-day volunteer awareness event with social posts",
+    "tech team, innovation, collaboration",
+    "Help me plan a website for our community organization",
+    "Create a strategic plan for our product team",
+    "Design logo concepts for our sports team",
+  ],
+};
+
+interface TeamContext {
+  teamName?: string;
+  teamType?: string;
+  focus?: string;
+  targetAudience?: string;
+  keywords?: string;
+  domain?: string;
+  colors?: string;
+  style?: string;
+}
+
+interface ContextStats {
+  tokenUsage: number;
+  maxTokens: number;
+  activeMedia: Array<{
+    type: 'file_api' | 'inline';
+    uri?: string;
+    mime_type: string;
+    size?: number;
+  }>;
+}
+
+interface GeminiChatbotProps {
+  brandId?: string;
+  isFullScreen?: boolean;
+}
+
+const cleanMessageContent = (content: string, media?: MediaAttachment[]) => {
+  let cleaned = content;
+
+  // Remove markers first (if any remain)
+  cleaned = cleaned.replace(/__IMAGE_DATA__[^]*?(?=\n\n|$)/g, '');
+  cleaned = cleaned.replace(/__VIDEO_DATA__[^]*?(?=\n\n|$)/g, '');
+  cleaned = cleaned.replace(/__IMAGE_URL__[^]*?(?=\n\n|$)/g, '');
+  cleaned = cleaned.replace(/__VIDEO_URL__[^]*?(?=\n\n|$)/g, '');
+  cleaned = cleaned.replace(/__EXPLAINABILITY__[^]*?(?=\n\n|$)/g, '');
+
+  // Remove raw URLs of attached media
+  // IMPORTANT: For YouTube videos, also remove the "YouTube video: " prefix
+  if (media && media.length > 0) {
+    media.forEach(m => {
+      if (m.url && m.url.startsWith('http')) {
+        try {
+          // Escape regex special characters in URL
+          const escapedUrl = m.url.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+          // Regex to match URL and optional preceding phrases
+          // Match "YouTube video: ", "Here's the link:", etc., whitespace, and the URL
+          const urlRegex = new RegExp(`((YouTube video:?|Here's|Here is|check|see) (the|this) (link|video):?\\s*)?${escapedUrl}`, 'gi');
+          cleaned = cleaned.replace(urlRegex, '');
+        } catch (e) {
+          // Fallback to simple replace if regex fails
+          cleaned = cleaned.replace(m.url, '');
+          // Also try to remove "YouTube video: " prefix if present
+          cleaned = cleaned.replace(/YouTube video:\s*/gi, '');
+        }
+      }
+    });
+  }
+
+  return cleaned.trim();
+};
+
+/**
+ * Deduplicate media attachments by URL to prevent showing the same image/video twice.
+ * This handles cases where the same media is added from multiple sources (streaming events + final_response markers).
+ */
+const deduplicateMedia = (media: MediaAttachment[]): MediaAttachment[] => {
+  if (!media || media.length === 0) return media;
+
+  const seen = new Set<string>();
+  return media.filter(m => {
+    if (!m.url) return true; // Keep items without URL
+
+    // Normalize URL for comparison (remove trailing slashes, query params for base64)
+    let normalizedUrl = m.url.trim();
+
+    // For base64 data URLs, use a hash of the first 100 chars to identify duplicates
+    // (comparing full base64 strings would be too expensive)
+    if (normalizedUrl.startsWith('data:')) {
+      normalizedUrl = normalizedUrl.substring(0, 150);
+    }
+
+    if (seen.has(normalizedUrl)) {
+      return false; // Duplicate, skip it
+    }
+    seen.add(normalizedUrl);
+    return true;
+  });
+};
+
+export function GeminiChatbot({ brandId, isFullScreen = false }: GeminiChatbotProps) {
+  const router = useRouter();
+  const {
+    closeChatbot,
+    pendingAttachments,
+    clearPendingAttachments,
+    pendingMessage,
+    clearPendingMessage,
+    currentConversationId,
+    setCurrentConversationId,
+    openConversationSidebar,
+    refreshConversations,
+    // Shared state (persists across drawer/fullscreen switches)
+    sharedMessages,
+    setSharedMessages,
+    sharedIsLoading,
+    setSharedIsLoading,
+    sharedInput,
+    setSharedInput,
+    sharedAttachments,
+    setSharedAttachments,
+  } = useGlobalChatbot();
+  const { user } = useAuth();
+  const { toast } = useToast();
+  const { addJob, startJob, completeJob, failJob, setProgress } = useJobQueue();
+  
+  // Use shared state from context (persists across mode switches)
+  const messages = sharedMessages;
+  const setMessages = setSharedMessages;
+  const input = sharedInput;
+  const setInput = setSharedInput;
+  const isLoading = sharedIsLoading;
+  const setIsLoading = setSharedIsLoading;
+  const attachments = sharedAttachments;
+  const setAttachments = setSharedAttachments;
+  
+  const [selectedCategory, setSelectedCategory] = useState<ModeCategory>('agent');
+  const [selectedMode, setSelectedMode] = useState<UnifiedMode>('agent');
+  const [detectedImageUrls, setDetectedImageUrls] = useState<string[]>([]);
+  const [teamContext, setTeamContext] = useState<TeamContext>({});
+  const [showContextForm, setShowContextForm] = useState(false);
+  const [isSavingCampaign, setIsSavingCampaign] = useState(false);
+  const [showClearDialog, setShowClearDialog] = useState(false);
+  const [sessionStats, setSessionStats] = useState<{ message_count?: number, created_at?: string, last_used?: string } | null>(null);
+  const [isClearing, setIsClearing] = useState(false);
+  const [mediaErrors, setMediaErrors] = useState<Record<string, boolean>>({});
+  const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
+  const [editContent, setEditContent] = useState('');
+  const [deletingMessageId, setDeletingMessageId] = useState<string | null>(null);
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const messagesContainerRef = useRef<HTMLDivElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const chatHistoryLoadedRef = useRef<string | null>(null);
+  const [contextStats, setContextStats] = useState<ContextStats | null>(null);
+  const [selectedMessageIds, setSelectedMessageIds] = useState<string[]>([]);
+
+  const scrollToBottom = () => {
+    // Use scrollTop on container instead of scrollIntoView to prevent page scroll
+    // scrollIntoView can cause the entire page to scroll in fullscreen mode
+    if (messagesContainerRef.current) {
+      messagesContainerRef.current.scrollTo({
+        top: messagesContainerRef.current.scrollHeight,
+        behavior: 'smooth',
+      });
+    }
+  };
+
+  useEffect(() => {
+    scrollToBottom();
+  }, [messages]);
+
+  // Handle pending attachments from global context
+  useEffect(() => {
+    if (pendingAttachments && pendingAttachments.length > 0) {
+      setAttachments(prev => [...prev, ...pendingAttachments]);
+      clearPendingAttachments();
+      // Switch to agent mode if not already
+      if (selectedCategory !== 'agent') {
+        setSelectedCategory('agent');
+      }
+    }
+  }, [pendingAttachments, clearPendingAttachments, selectedCategory]);
+
+  // Handle pending message from global context
+  useEffect(() => {
+    if (pendingMessage) {
+      setInput(pendingMessage);
+      clearPendingMessage();
+      // Switch to agent mode if not already
+      if (selectedCategory !== 'agent') {
+        setSelectedCategory('agent');
+      }
+    }
+  }, [pendingMessage, clearPendingMessage, selectedCategory]);
+
+  useEffect(() => {
+    // Update selected mode when category changes
+    if (selectedCategory === 'agent') {
+      setSelectedMode('agent');
+    } else if (selectedCategory === 'ai-models') {
+      setSelectedMode('gemini-text');
+    } else {
+      setSelectedMode('team-chat');
+    }
+  }, [selectedCategory]);
+
+  useEffect(() => {
+    // Show context form for team tools that require it
+    // Note: teamToolsInfo is defined later in component, check for requiresContext directly
+    const requiresContextModes = ['website-planning', 'team-strategy', 'logo-concepts'];
+    if (selectedCategory === 'team-tools' && requiresContextModes.includes(selectedMode)) {
+      setShowContextForm(true);
+    } else {
+      setShowContextForm(false);
+    }
+  }, [selectedMode, selectedCategory]);
+
+  const loadChatHistory = async (conversationIdToLoad?: string) => {
+    if (!brandId) return;
+    setIsLoading(true);
+
+    // Use provided conversationId or current one from context
+    const targetConversationId = conversationIdToLoad ?? currentConversationId;
+
+    try {
+      const url = targetConversationId && targetConversationId !== DEFAULT_CONVERSATION_ID
+        ? `/api/chat/history?brandId=${brandId}&conversationId=${targetConversationId}`
+        : `/api/chat/history?brandId=${brandId}`;
+      const response = await fetch(url);
+      if (response.ok) {
+        const data = await response.json();
+        if (data.messages && data.messages.length > 0) {
+          // Process media URLs for display and ensure IDs are included
+          const messagesWithUrls = data.messages.map((msg: any) => {
+            let processedMedia: MediaAttachment[] | undefined = undefined;
+            const originalContent = msg.content || '';
+
+            // CRITICAL: First, check if media was saved to Firestore
+            // This is the PRIMARY source - if media exists here, use it!
+            if (msg.media && msg.media.length > 0) {
+              processedMedia = msg.media.map((m: any) => ({
+                ...m,
+                // Use Firebase Storage URL if available, otherwise convert base64 to data URL
+                url: m.url || (m.data ? `data:${m.mimeType};base64,${m.data}` : ''),
+              }));
+              console.log(`[GeminiChatbot] ✅ LOADING - Message ${msg.id || 'unknown'} has ${processedMedia?.length ?? 0} media item(s) from Firestore:`, 
+                processedMedia?.map(m => ({ type: m.type, url: m.url?.substring(0, 70), mimeType: m.mimeType })));
+              
+              // Check if any of the saved media are YouTube videos
+              const hasYouTubeInMedia = processedMedia?.some(m => 
+                m.type === 'video' && m.url && /youtube\.com|youtu\.be/.test(m.url)
+              );
+              if (hasYouTubeInMedia) {
+                console.log(`[GeminiChatbot] ✅ LOADING - YouTube video found in Firestore media array for message ${msg.id || 'unknown'}`);
+              }
+            } else {
+              console.log(`[GeminiChatbot] ⚠️ LOADING - No media found in Firestore for message ${msg.id || 'unknown'}`);
+            }
+            
+            // Extract YouTube URLs from content and add them as media attachments if not already present
+            // CRITICAL: This MUST work for both pasted links and media library injections
+            // IMPORTANT: Extract from original content BEFORE cleanMessageContent removes URLs
+            // This is a FALLBACK in case media wasn't saved correctly to Firestore
+            
+            console.log(`[GeminiChatbot] 🔍 LOADING - Message ${msg.id || 'unknown'}:`, {
+              hasMediaInFirestore: msg.media && msg.media.length > 0,
+              firestoreMediaCount: msg.media?.length || 0,
+              contentLength: originalContent.length,
+              contentPreview: originalContent.substring(0, 150),
+            });
+            
+            // Use the SAME comprehensive regex as when saving
+            // This will match YouTube URLs whether they're:
+            // - Pasted directly: "https://youtube.com/watch?v=..."
+            // - Injected from media library: "YouTube video: https://youtube.com/watch?v=..."
+            const youtubeUrlRegex = /(?:https?:\/\/)?(?:www\.)?(?:youtube\.com\/(?:watch\?v=|embed\/|v\/)|youtu\.be\/)([a-zA-Z0-9_-]{11})/gi;
+            const allMatches: RegExpMatchArray[] = Array.from(originalContent.matchAll(youtubeUrlRegex));
+            
+            console.log(`[GeminiChatbot] 🔍 LOADING - Found ${allMatches.length} YouTube URL match(es) in content`);
+            
+            if (allMatches.length > 0) {
+              const youtubeMedia: MediaAttachment[] = [];
+              const seenVideoIds = new Set<string>();
+              
+              for (const match of allMatches) {
+                const videoId = match[1]; // Extract video ID
+                const fullMatch = match[0]; // Full matched string
+                
+                // Skip duplicates
+                if (seenVideoIds.has(videoId)) {
+                  console.log(`[GeminiChatbot] ⚠️ LOADING - Duplicate video ID skipped: ${videoId}`);
+                  continue;
+                }
+                seenVideoIds.add(videoId);
+                
+                // Normalize to standard format
+                const youtubeUrl = `https://www.youtube.com/watch?v=${videoId}`;
+                
+                // Check if already in processedMedia
+                const alreadyInMedia = processedMedia?.some(m => {
+                  if (!m.url) return false;
+                  const existingVideoId = m.url.match(/(?:youtube\.com\/watch\?v=|youtu\.be\/)([a-zA-Z0-9_-]{11})/)?.[1];
+                  return existingVideoId === videoId;
+                });
+                
+                if (!alreadyInMedia) {
+                  youtubeMedia.push({
+                    type: 'video',
+                    url: youtubeUrl,
+                    fileName: 'YouTube Video',
+                    mimeType: 'video/youtube',
+                  });
+                  console.log(`[GeminiChatbot] ✅ LOADING - Extracted YouTube URL: ${youtubeUrl} (video ID: ${videoId}, matched: "${fullMatch}")`);
+                } else {
+                  console.log(`[GeminiChatbot] ⚠️ LOADING - YouTube URL already in processedMedia: ${youtubeUrl}`);
+                }
+              }
+              
+              // CRITICAL: Always add YouTube media if found, even if Firestore had no media
+              if (youtubeMedia.length > 0) {
+                processedMedia = [...(processedMedia || []), ...youtubeMedia];
+                console.log(`[GeminiChatbot] ✅ LOADING - Added ${youtubeMedia.length} YouTube video(s) to media for message ${msg.id || 'unknown'}`);
+              }
+            }
+            
+            console.log(`[GeminiChatbot] 📦 LOADING - Final media count for message ${msg.id || 'unknown'}: ${processedMedia?.length || 0}`);
+
+            // Final fallback: If processedMedia is empty but content has YouTube URLs, extract them
+            // This is a safety net in case media wasn't saved correctly to Firestore
+            if ((!processedMedia || processedMedia.length === 0) && originalContent) {
+              console.log(`[GeminiChatbot] ⚠️ LOADING - No media found in Firestore for message ${msg.id || 'unknown'}, trying fallback extraction from content`);
+              const fallbackMatches: RegExpMatchArray[] = Array.from(originalContent.matchAll(youtubeUrlRegex));
+              if (fallbackMatches.length > 0) {
+                const fallbackMedia: MediaAttachment[] = [];
+                const seenIds = new Set<string>();
+                for (const match of fallbackMatches) {
+                  const videoId = match[1];
+                  if (!seenIds.has(videoId)) {
+                    seenIds.add(videoId);
+                    fallbackMedia.push({
+                      type: 'video',
+                      url: `https://www.youtube.com/watch?v=${videoId}`,
+                      fileName: 'YouTube Video',
+                      mimeType: 'video/youtube',
+                    });
+                    console.log(`[GeminiChatbot] ✅ LOADING - Fallback extraction found YouTube URL: https://www.youtube.com/watch?v=${videoId}`);
+                  }
+                }
+                if (fallbackMedia.length > 0) {
+                  processedMedia = fallbackMedia;
+                  console.log(`[GeminiChatbot] ✅ LOADING - Fallback extraction added ${fallbackMedia.length} YouTube video(s) to media`);
+                }
+              }
+            }
+
+            const processedMsg = {
+              ...msg,
+              id: msg.id, // Preserve Firestore document ID
+              media: processedMedia,
+              content: cleanMessageContent(msg.content, processedMedia),
+            };
+
+            console.log(`[GeminiChatbot] Final processed message ${msg.id || 'unknown'}:`, {
+              hasMedia: !!processedMedia && processedMedia.length > 0,
+              mediaCount: processedMedia?.length || 0,
+              contentLength: processedMsg.content?.length || 0,
+            });
+
+            return processedMsg;
+          });
+
+          console.log(`[GeminiChatbot] Loaded ${messagesWithUrls.length} messages from chat history`, messagesWithUrls);
+          messagesWithUrls.forEach((msg: any, index: number) => {
+            if (msg.media && msg.media.length > 0) {
+              console.log(`[GeminiChatbot] Message ${index} media:`, msg.media);
+            }
+          });
+
+          setMessages(messagesWithUrls);
+
+          // Notify user that history was loaded
+          toast({
+            title: "✨ Chat History Loaded",
+            description: `${messagesWithUrls.length} previous message${messagesWithUrls.length > 1 ? 's' : ''} restored`,
+          });
+        }
+      } else {
+        console.error('Failed to load chat history');
+      }
+    } catch (error) {
+      console.error('Error loading chat history:', error);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  // Load chat history on mount (with guard against StrictMode double-mount)
+  useEffect(() => {
+    if (!brandId) return;
+    
+    // IMPORTANT: Skip if we're currently loading a response (isLoading = true)
+    // This prevents mode switches from reloading history and clearing the loading state
+    // which would remove the thinking bubble
+    if (isLoading) {
+      chatHistoryLoadedRef.current = brandId;
+      return;
+    }
+    
+    // Skip if we already have messages from shared state (mode switch scenario)
+    // When switching modes, the new instance will already have messages from context
+    // so we don't need to reload them from the database
+    if (messages.length > 0) {
+      chatHistoryLoadedRef.current = brandId;
+      return;
+    }
+    
+    // Skip if we already loaded for this brandId (React StrictMode calls effects twice)
+    if (chatHistoryLoadedRef.current === brandId) return;
+    chatHistoryLoadedRef.current = brandId;
+
+    loadChatHistory();
+    fetchSessionStats();
+  }, [brandId, isLoading, messages.length]);
+
+  // Handle conversation switching - reload messages when conversation changes
+  const previousConversationIdRef = useRef<string>(currentConversationId);
+  useEffect(() => {
+    // Skip if this is initial mount or same conversation
+    if (previousConversationIdRef.current === currentConversationId) return;
+    
+    // IMPORTANT: Skip if we're currently sending a message (isLoading = true)
+    // This prevents the conversation auto-creation from clearing the loading state
+    // and removing the thinking bubble for the first message
+    if (isLoading) {
+      // Just update the ref without reloading - messages are already correct
+      previousConversationIdRef.current = currentConversationId;
+      return;
+    }
+    
+    previousConversationIdRef.current = currentConversationId;
+
+    // Clear messages and load new conversation history
+    setMessages([]);
+    if (currentConversationId === DEFAULT_CONVERSATION_ID) {
+      // For default/current session, load without conversationId filter
+      loadChatHistory();
+    } else {
+      // For specific conversation, load with conversationId
+      loadChatHistory(currentConversationId);
+    }
+  }, [currentConversationId, isLoading]);
+
+  // Handlers for conversation sidebar callbacks
+  const handleSelectConversation = (conversationId: string) => {
+    setCurrentConversationId(conversationId);
+  };
+
+  const handleNewConversation = () => {
+    setMessages([]);
+    refreshConversations();
+  };
+
+  // Detect image URLs in input text
+  useEffect(() => {
+    const imageUrls = extractImageUrls(input);
+    setDetectedImageUrls(imageUrls);
+  }, [input]);
+
+  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.target.files || []);
+
+    files.forEach((file) => {
+      const isImage = file.type.startsWith('image/');
+      const isVideo = file.type.startsWith('video/');
+      const isPDF = file.type === 'application/pdf';
+      const isAudio = file.type.startsWith('audio/');
+
+      if (!isImage && !isVideo && !isPDF && !isAudio) {
+        console.warn('Unsupported file type:', file.type);
+        return;
+      }
+
+      let fileType: 'image' | 'video' | 'pdf' | 'audio';
+      if (isImage) fileType = 'image';
+      else if (isVideo) fileType = 'video';
+      else if (isPDF) fileType = 'pdf';
+      else fileType = 'audio';
+
+      // For images, show preview using data URL
+      // For videos/PDFs/audio, just show filename (avoid large data URLs)
+      if (isImage && file.size < 5 * 1024 * 1024) { // Only preview images < 5MB
+        const reader = new FileReader();
+        reader.onload = (event) => {
+          const attachment: MediaAttachment = {
+            type: fileType,
+            url: event.target?.result as string,
+            file,
+            fileName: file.name,
+            mimeType: file.type,
+          };
+          setAttachments((prev) => [...prev, attachment]);
+        };
+        reader.readAsDataURL(file);
+      } else {
+        // For videos, large images, PDFs, and audio, use placeholder URL
+        // The actual file will be uploaded to Firebase Storage when sending
+        const attachment: MediaAttachment = {
+          type: fileType,
+          url: '', // No preview URL, will upload to Firebase Storage on send
+          file,
+          fileName: file.name,
+          mimeType: file.type,
+        };
+        setAttachments((prev) => [...prev, attachment]);
+      }
+    });
+
+    if (fileInputRef.current) {
+      fileInputRef.current.value = '';
+    }
+  };
+
+  const removeAttachment = (index: number) => {
+    setAttachments((prev) => prev.filter((_, i) => i !== index));
+  };
+
+  const fetchSessionStats = async () => {
+    if (!brandId) return;
+    try {
+      const response = await fetch(`/api/chat/session-stats?brandId=${brandId}`);
+      if (response.ok) {
+        const data = await response.json();
+        if (data.stats) {
+          setSessionStats(data.stats);
+        }
+      }
+    } catch (error) {
+      console.error('Failed to fetch session stats:', error);
+    }
+  };
+
+  const handleClearHistory = async () => {
+    if (!brandId) return;
+    setIsClearing(true);
+    try {
+      const response = await fetch('/api/chat/delete-session', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ brandId }),
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        if (data.status === 'success') {
+          setMessages([]);
+          setSessionStats(null);
+          setContextStats(null); // Reset context stats
+          setShowClearDialog(false);
+        } else {
+          console.error('Failed to clear chat history:', data);
+          alert('Failed to clear chat history. Please try again.');
+        }
+      } else {
+        const errorData = await response.json();
+        console.error('Failed to clear chat history:', errorData);
+        alert(`Error: ${errorData.error || 'Failed to clear chat history'}`);
+      }
+    } catch (error) {
+      console.error('Error clearing chat history:', error);
+      alert('Network error. Please try again.');
+    } finally {
+      setIsClearing(false);
+    }
+  };
+
+  const handleDeleteMessage = async (messageId: string) => {
+    if (!brandId || !messageId) return;
+
+    try {
+      // Always delete only the selected message, preserving all subsequent messages
+      const response = await fetch(
+        `/api/chat/delete?brandId=${brandId}&messageId=${messageId}&cascade=false`,
+        { method: 'DELETE' }
+      );
+
+      if (response.ok) {
+        // Remove only this message from local state (preserve all subsequent messages)
+        setMessages((prev) => prev.filter((m) => m.id !== messageId));
+
+        // Optimistically update context stats
+        // Estimate tokens: ~4 chars per token + 258 per image
+        const messageToDelete = messages.find(m => m.id === messageId);
+        if (messageToDelete && contextStats) {
+          let estimatedTokens = Math.ceil((messageToDelete.content?.length || 0) / 4);
+
+          // Add media tokens if present
+          if (messageToDelete.media && messageToDelete.media.length > 0) {
+            // Standard Gemini image cost is ~258 tokens
+            estimatedTokens += messageToDelete.media.length * 258;
+          }
+
+          setContextStats(prev => prev ? {
+            ...prev,
+            tokenUsage: Math.max(0, prev.tokenUsage - estimatedTokens)
+          } : null);
+        }
+
+        toast({
+          title: "Message deleted",
+          description: "Message removed and context usage updated.",
+        });
+      } else {
+        const errorData = await response.json();
+        toast({
+          title: "Error",
+          description: errorData.error || "Failed to delete message",
+          variant: "destructive",
+        });
+      }
+    } catch (error) {
+      console.error('Error deleting message:', error);
+      toast({
+        title: "Error",
+        description: "Network error. Please try again.",
+        variant: "destructive",
+      });
+    } finally {
+      setDeletingMessageId(null);
+    }
+  };
+
+  const handleEditMessage = (message: Message) => {
+    if (!message.id || message.role !== 'user') return;
+    setEditingMessageId(message.id);
+    setEditContent(message.content);
+  };
+
+  const handleSaveEdit = async (messageId: string) => {
+    if (!brandId || !messageId || !editContent.trim()) return;
+
+    try {
+      const response = await fetch('/api/chat/update', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          brandId,
+          messageId,
+          content: editContent.trim(),
+          role: 'user', // Explicitly send role
+          timestamp: messages.find(m => m.id === messageId)?.timestamp, // Send original timestamp if available
+          deleteNextOnly: true, // Only delete the immediate next assistant message
+          cascade: false,
+        }),
+      });
+
+      if (response.ok) {
+        // Calculate the updated messages before state update
+        const messageIndex = messages.findIndex((m) => m.id === messageId);
+
+        if (messageIndex === -1) {
+          toast({
+            title: "Error",
+            description: "Message not found",
+            variant: "destructive",
+          });
+          return;
+        }
+
+        // Update the edited message in the array
+        const updatedMessages = [...messages];
+        updatedMessages[messageIndex] = {
+          ...updatedMessages[messageIndex],
+          content: editContent.trim(),
+        };
+
+        // Remove only the immediate next assistant message (if it exists)
+        const nextMessageIndex = messageIndex + 1;
+        if (nextMessageIndex < updatedMessages.length && updatedMessages[nextMessageIndex].role === 'assistant') {
+          updatedMessages.splice(nextMessageIndex, 1);
+        }
+
+        // Update local state - only remove the immediate assistant response
+        setMessages(updatedMessages);
+
+        setEditingMessageId(null);
+        setEditContent('');
+
+        toast({
+          title: "Message updated",
+          description: "Regenerating response...",
+        });
+
+        // Trigger regeneration by calling the API directly
+        // We don't use sendMessage here because we've already updated the message
+        // and removed subsequent messages. We just need to get a new AI response.
+        setIsLoading(true);
+
+        try {
+          // Check if we edited the LAST user message.
+          // If so, we should tell the backend to "forget" the previous turn so context usage doesn't grow.
+          // The updatedMessages array already has the next assistant message removed (if it existed).
+          // So if the edited message is now the last one (or second to last if we added a placeholder),
+          // we can assume it's the last turn.
+
+          // We haven't added the placeholder yet in `updatedMessages`.
+          // So if messageIndex is the last index, it's the last message.
+          const isLastUserMessage = messageIndex === updatedMessages.length - 1;
+          const isFirstMessage = messageIndex === 0;
+
+          if (isFirstMessage) {
+            // If editing the FIRST message, we should clear the entire session to start fresh.
+            // This avoids "forking" the conversation weirdly on the backend.
+            try {
+              console.log('Editing first message, clearing session...');
+              toast({
+                title: "Resetting Session",
+                description: "Starting a fresh conversation from this edit...",
+              });
+              await fetch('/api/chat/delete-session', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ brandId }),
+              });
+              // We also need to reset contextStats visually
+              setContextStats(null);
+            } catch (err) {
+              console.error('Failed to clear session:', err);
+            }
+          } else if (isLastUserMessage) {
+            try {
+              console.log('Editing last message, syncing with backend to undo last turn...');
+              // Optional: Show toast for debugging/feedback
+              // toast({ title: "Syncing", description: "Removing previous turn..." });
+
+              await fetch('/api/chat/undo-last-turn', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ brandId }),
+              });
+            } catch (err) {
+              console.error('Failed to undo last turn:', err);
+              // Continue anyway, regeneration will just append (suboptimal but functional)
+            }
+          }
+
+          // Build messages up to and including the edited message for API call
+          const messagesForAPI = updatedMessages.slice(0, messageIndex + 1);
+
+          // Add placeholder for assistant response at the correct position
+          const assistantMessageIndex = messageIndex + 1;
+          const messagesWithPlaceholder = [
+            ...updatedMessages.slice(0, assistantMessageIndex),
+            { role: 'assistant' as const, content: '', mode: selectedMode },
+            ...updatedMessages.slice(assistantMessageIndex),
+          ];
+          setMessages(messagesWithPlaceholder);
+
+          // Now make the API call with the updated messages (up to the edited message)
+          // IMPORTANT: Don't filter YouTube URLs from historical messages - they were saved as media
+          // and should be preserved for display. Only filter when sending NEW messages.
+          const apiMessages = messagesForAPI.map(m => ({
+            role: m.role,
+            content: m.content,
+            // Preserve all media from historical messages - don't filter YouTube URLs here
+            // The backend will handle YouTube URLs appropriately when processing
+            media: m.media,
+          }));
+
+          // Get media from the edited message to resend
+          // Filter out YouTube URLs - they should be in the message text, not as attachments
+          const editedMessage = updatedMessages[messageIndex];
+          const mediaToResend = editedMessage.media 
+            ? editedMessage.media
+                .filter(m => {
+                  // Skip YouTube URLs - they can't be processed as video attachments
+                  if (m.type === 'video' && m.url && isYouTubeUrl(m.url)) {
+                    console.log('[GeminiChatbot] Filtering out YouTube URL from mediaToResend:', m.url);
+                    return false;
+                  }
+                  return true;
+                })
+                .map(m => ({
+                  type: m.type,
+                  url: m.url,
+                  fileName: m.fileName,
+                  mimeType: m.mimeType
+                }))
+            : [];
+
+          // Call the API to get the AI response
+          const aiResponse = await fetch('/api/chat', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              messages: apiMessages,
+              mode: selectedMode,
+              media: mediaToResend,
+              brandId: brandId,
+              teamContext: selectedCategory === 'team-tools' ? teamContext : undefined,
+            }),
+          });
+
+          if (!aiResponse.ok) {
+            throw new Error('Failed to get response');
+          }
+
+          // Handle the response (same logic as sendMessage)
+          const contentType = aiResponse.headers.get('content-type');
+
+          if (contentType?.includes('application/json')) {
+            // Handle structured JSON response from Marketing Agent / ADK Agent
+            const data = await aiResponse.json();
+
+            const originalContent = data.content || '';
+            let generatedMedia: MediaAttachment[] = [];
+            let explainabilityData: { summary: string; confidence: number; appliedControls: string[]; brandElements: string[]; avoidedElements: string[]; } | undefined = undefined;
+
+            // Find all markers in the content with their positions to preserve order
+            const markers: Array<{ type: 'image' | 'video' | 'image_url' | 'video_url' | 'explainability'; position: number }> = [];
+
+            let searchPos = 0;
+            while (searchPos < originalContent.length) {
+              const imagePos = originalContent.indexOf('__IMAGE_DATA__', searchPos);
+              const videoPos = originalContent.indexOf('__VIDEO_DATA__', searchPos);
+              const imageUrlPos = originalContent.indexOf('__IMAGE_URL__', searchPos);
+              const videoUrlPos = originalContent.indexOf('__VIDEO_URL__', searchPos);
+              const explainPos = originalContent.indexOf('__EXPLAINABILITY__', searchPos);
+
+              const nextPos = Math.min(
+                imagePos >= 0 ? imagePos : Infinity,
+                videoPos >= 0 ? videoPos : Infinity,
+                imageUrlPos >= 0 ? imageUrlPos : Infinity,
+                videoUrlPos >= 0 ? videoUrlPos : Infinity,
+                explainPos >= 0 ? explainPos : Infinity
+              );
+
+              if (nextPos === Infinity) break;
+
+              if (nextPos === imagePos) {
+                markers.push({ type: 'image', position: imagePos });
+                searchPos = imagePos + '__IMAGE_DATA__'.length;
+              } else if (nextPos === videoPos) {
+                markers.push({ type: 'video', position: videoPos });
+                searchPos = videoPos + '__VIDEO_DATA__'.length;
+              } else if (nextPos === imageUrlPos) {
+                markers.push({ type: 'image_url', position: imageUrlPos });
+                searchPos = imageUrlPos + '__IMAGE_URL__'.length;
+              } else if (nextPos === videoUrlPos) {
+                markers.push({ type: 'video_url', position: videoUrlPos });
+                searchPos = videoUrlPos + '__VIDEO_URL__'.length;
+              } else if (nextPos === explainPos) {
+                markers.push({ type: 'explainability', position: explainPos });
+                searchPos = explainPos + '__EXPLAINABILITY__'.length;
+              }
+            }
+
+            // Process markers in order to preserve media sequence
+            for (let i = 0; i < markers.length; i++) {
+              const marker = markers[i];
+              let markerLength = 0;
+              if (marker.type === 'image') markerLength = '__IMAGE_DATA__'.length;
+              else if (marker.type === 'video') markerLength = '__VIDEO_DATA__'.length;
+              else if (marker.type === 'image_url') markerLength = '__IMAGE_URL__'.length;
+              else if (marker.type === 'video_url') markerLength = '__VIDEO_URL__'.length;
+              else markerLength = '__EXPLAINABILITY__'.length;
+
+              const startPos = marker.position + markerLength;
+              const nextMarkerPos = markers[i + 1]?.position ?? originalContent.length;
+
+              let payload = originalContent.substring(startPos, nextMarkerPos).trim();
+
+              if (marker.type === 'image') {
+                const base64Match = payload.match(/[A-Za-z0-9+/=]{20,}/);
+                const cleanBase64 = base64Match ? base64Match[0] : '';
+                if (cleanBase64 && cleanBase64.length > 100) {
+                  generatedMedia.push({
+                    type: 'image',
+                    url: 'data:image/png;base64,' + cleanBase64,
+                  });
+                }
+              } else if (marker.type === 'video') {
+                const base64Match = payload.match(/[A-Za-z0-9+/=]{20,}/);
+                const cleanBase64 = base64Match ? base64Match[0] : '';
+                if (cleanBase64 && cleanBase64.length > 100) {
+                  generatedMedia.push({
+                    type: 'video',
+                    url: 'data:video/mp4;base64,' + cleanBase64,
+                  });
+                }
+              } else if (marker.type === 'image_url') {
+                // Extract URL (assume it ends at whitespace or end of string)
+                const urlMatch = payload.match(/https?:\/\/[^\s]+/);
+                const url = urlMatch ? urlMatch[0] : payload;
+                if (url) {
+                  generatedMedia.push({
+                    type: 'image',
+                    url: url,
+                  });
+                }
+              } else if (marker.type === 'video_url') {
+                const urlMatch = payload.match(/https?:\/\/[^\s]+/);
+                const url = urlMatch ? urlMatch[0] : payload;
+                if (url) {
+                  generatedMedia.push({
+                    type: 'video',
+                    url: url,
+                  });
+                }
+              } else if (marker.type === 'explainability') {
+                const explainJson = payload.split('\n')[0]?.trim();
+                if (explainJson) {
+                  try {
+                    explainabilityData = JSON.parse(explainJson);
+                  } catch (e) {
+                    console.error('Failed to parse explainability:', e);
+                  }
+                }
+              }
+            }
+
+            // Extract clean text content (everything before first marker)
+            const firstMarkerPos = markers.length > 0 ? markers[0].position : originalContent.length;
+            const finalContent = originalContent.substring(0, firstMarkerPos).trim();
+
+            setMessages((prev) => {
+              const updated = [...prev];
+              updated[assistantMessageIndex] = {
+                role: 'assistant',
+                content: finalContent,
+                mode: selectedMode,
+                structuredData: data.data,
+                media: generatedMedia.length > 0 ? deduplicateMedia(generatedMedia) : undefined,
+                explainability: explainabilityData,
+              };
+              return updated;
+            });
+          } else {
+            // Handle streaming response (NDJSON for Agent, text/plain for Gemini)
+            // We check both Content-Type and the actual content to be robust
+            const isNdjsonHeader = contentType?.includes('application/x-ndjson');
+
+            if (isNdjsonHeader || contentType?.includes('text/plain') || contentType?.includes('application/json')) {
+              const reader = aiResponse.body?.getReader();
+              const decoder = new TextDecoder();
+              let assistantContent = '';
+              let thinkingProcess: string[] = [];
+              let generatedMedia: MediaAttachment[] = [];
+              let structuredData: any = null;
+              let currentExplainability: any = null; // Track explainability for saving to history
+              let isNdjson = isNdjsonHeader; // Trust header initially, but verify with content if needed
+
+              if (reader) {
+                let buffer = '';
+                let firstChunkChecked = false;
+
+                while (true) {
+                  const { done, value } = await reader.read();
+                  if (done) break;
+
+                  const chunk = decoder.decode(value, { stream: true });
+
+                  // Auto-detect NDJSON from content if header didn't specify it
+                  if (!firstChunkChecked && !isNdjson) {
+                    const trimmedChunk = chunk.trim();
+                    if (trimmedChunk.startsWith('{"type":') || trimmedChunk.startsWith('{"type" :')) {
+                      console.log('Auto-detected NDJSON stream from content (regeneration)');
+                      isNdjson = true;
+                    }
+                    firstChunkChecked = true;
+                  }
+
+                  if (isNdjson) {
+                    // Handle NDJSON stream (Agent Mode)
+                    buffer += chunk;
+                    const lines = buffer.split('\n');
+                    buffer = lines.pop() || ''; // Keep incomplete line in buffer
+
+                    for (const line of lines) {
+                      if (!line.trim()) continue;
+
+                      try {
+                        const event = JSON.parse(line);
+
+                        if (event.type === 'log') {
+                          // Add to thinking process
+                          thinkingProcess.push(event.content);
+                          // Update UI to show thinking
+                          setMessages((prev) => {
+                            const updated = [...prev];
+                            if (updated[assistantMessageIndex] && updated[assistantMessageIndex].role === 'assistant') {
+                              updated[assistantMessageIndex] = {
+                                ...updated[assistantMessageIndex],
+                                content: assistantContent || 'Thinking...', // Show thinking if no content yet
+                                thoughts: [...thinkingProcess],
+                              };
+                            }
+                            return updated;
+                          });
+                        } else if (event.type === 'context_update') {
+                          setContextStats({
+                            tokenUsage: event.token_usage,
+                            maxTokens: event.max_tokens,
+                            activeMedia: event.active_media
+                          });
+                        } else if (event.type === 'image') {
+                          // Handle generated image
+                          const imgData = event.data;
+                          let url = '';
+                          if (imgData.format === 'url') {
+                            url = imgData.url;
+                          } else if (imgData.format === 'base64') {
+                            url = `data:image/png;base64,${imgData.data}`;
+                          }
+
+                          if (url) {
+                            generatedMedia.push({
+                              type: 'image',
+                              url: url,
+                              fileName: imgData.prompt
+                            });
+
+                            // Create explainability for Agent-generated images
+                            const agentExplainability = imgData.explainability || {
+                              summary: `Image generated by AI Agent using Imagen 4.0 with prompt: "${imgData.prompt || 'Generated Image'}"`,
+                              confidence: 0.85,
+                              appliedControls: ['AI Agent Generation', 'Imagen 4.0'],
+                              brandElements: [],
+                              avoidedElements: []
+                            };
+
+                            // Track explainability for saving to history
+                            currentExplainability = agentExplainability;
+
+                            // Update UI immediately with image and explainability
+                            setMessages((prev) => {
+                              const updated = [...prev];
+                              updated[assistantMessageIndex] = {
+                                ...updated[assistantMessageIndex],
+                                media: [...generatedMedia],
+                                explainability: agentExplainability
+                              };
+                              return updated;
+                            });
+
+                            // Save to Media Library (Unified Media)
+                            if (brandId) {
+                              const imageId = `chatbot-img-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+                              saveChatbotImageAction(
+                                brandId,
+                                imageId,
+                                imgData.prompt || 'Generated Image',
+                                url
+                              ).catch(err => console.error('Failed to save generated image to library:', err));
+                            }
+                          }
+                        } else if (event.type === 'video') {
+                          // Handle generated video
+                          const vidData = event.data;
+                          let url = '';
+                          if (vidData.format === 'url') {
+                            url = vidData.url;
+                          } else if (vidData.format === 'base64') {
+                            url = `data:video/mp4;base64,${vidData.data}`;
+                          }
+
+                          if (url) {
+                            generatedMedia.push({
+                              type: 'video',
+                              url: url,
+                              fileName: vidData.prompt
+                            });
+
+                            // Create explainability for Agent-generated videos
+                            const videoExplainability = vidData.explainability || {
+                              summary: `Video generated by AI Agent using Veo 2 with prompt: "${vidData.prompt || 'Generated Video'}"`,
+                              confidence: 0.85,
+                              appliedControls: ['AI Agent Generation', 'Veo 2'],
+                              brandElements: [],
+                              avoidedElements: []
+                            };
+
+                            // Track explainability for saving to history
+                            currentExplainability = videoExplainability;
+
+                            // Update UI immediately with video and explainability
+                            setMessages((prev) => {
+                              const updated = [...prev];
+                              updated[assistantMessageIndex] = {
+                                ...updated[assistantMessageIndex],
+                                media: [...generatedMedia],
+                                explainability: videoExplainability
+                              };
+                              return updated;
+                            });
+
+                            // Save to Media Library (Unified Media)
+                            if (brandId) {
+                              const videoId = `chatbot-vid-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+                              saveChatbotVideoAction(
+                                brandId,
+                                videoId,
+                                vidData.prompt || 'Generated Video',
+                                url,
+                                vidData.input_image_url,
+                                vidData.character_reference_url,
+                                vidData.start_frame_url,
+                                vidData.end_frame_url
+                              ).catch(err => console.error('Failed to save generated video to library:', err));
+                            }
+                          }
+                        } else if (event.type === 'text') {
+                          // Handle intermediate text stream
+                          assistantContent += event.content;
+                          setMessages((prev) => {
+                            const updated = [...prev];
+                            if (updated[assistantMessageIndex] && updated[assistantMessageIndex].role === 'assistant') {
+                              updated[assistantMessageIndex] = {
+                                ...updated[assistantMessageIndex],
+                                content: assistantContent,
+                                thoughts: thinkingProcess.length > 0 ? thinkingProcess : undefined,
+                              };
+                            }
+                            return updated;
+                          });
+                        } else if (event.type === 'data') {
+                          structuredData = event.data;
+                        } else if (event.type === 'final_response') {
+                          assistantContent = event.content;
+
+                          // Extract __IMAGE_URL__ and __VIDEO_URL__ markers from content
+                          // These are used by media search tools to display images in chat
+                          // Use non-greedy match to capture URL between markers
+                          const imageUrlMatches = assistantContent.matchAll(/__IMAGE_URL__(.+?)__IMAGE_URL__/g);
+                          for (const match of imageUrlMatches) {
+                            if (match[1]) {
+                              generatedMedia.push({
+                                type: 'image',
+                                url: match[1].trim(),
+                              });
+                            }
+                          }
+                          const videoUrlMatches = assistantContent.matchAll(/__VIDEO_URL__(.+?)__VIDEO_URL__/g);
+                          for (const match of videoUrlMatches) {
+                            if (match[1]) {
+                              generatedMedia.push({
+                                type: 'video',
+                                url: match[1].trim(),
+                              });
+                            }
+                          }
+
+                          // Clean the markers from displayed content
+                          const cleanedContent = assistantContent
+                            .replace(/__IMAGE_URL__.+?__IMAGE_URL__/g, '')
+                            .replace(/__VIDEO_URL__.+?__VIDEO_URL__/g, '')
+                            .trim();
+                          assistantContent = cleanedContent;
+
+                          // Final update - include explainability if available
+                          setMessages((prev) => {
+                            const updated = [...prev];
+                            updated[assistantMessageIndex] = {
+                              role: 'assistant',
+                              content: assistantContent,
+                              mode: selectedMode,
+                              media: generatedMedia.length > 0 ? deduplicateMedia(generatedMedia) : undefined,
+                              structuredData: structuredData,
+                              thoughts: thinkingProcess.length > 0 ? thinkingProcess : undefined,
+                              explainability: currentExplainability || undefined,
+                            };
+                            return updated;
+                          });
+
+                          // Save the complete assistant message to history (including explainability)
+                          if (brandId) {
+                            fetch('/api/chat/history', {
+                              method: 'POST',
+                              headers: { 'Content-Type': 'application/json' },
+                              body: JSON.stringify({
+                                brandId,
+                                role: 'assistant',
+                                content: assistantContent,
+                                media: generatedMedia.length > 0 ? deduplicateMedia(generatedMedia) : undefined,
+                                thoughts: thinkingProcess.length > 0 ? thinkingProcess : undefined,
+                                structuredData: structuredData,
+                                explainability: currentExplainability || undefined,
+                                // Use currentConversationId here since we're in handleSaveEdit (regenerating response for existing conversation)
+                                conversationId: currentConversationId !== DEFAULT_CONVERSATION_ID ? currentConversationId : undefined,
+                              }),
+                            }).then(() => refreshConversations()).catch(err => console.error('Failed to save assistant message:', err));
+                          }
+                        } else if (event.type === 'error') {
+                          console.error('Stream error:', event.content);
+                          toast({
+                            title: "Error during processing",
+                            description: event.content,
+                            variant: "destructive"
+                          });
+                        }
+                      } catch (e) {
+                        console.error('Error parsing NDJSON line:', e, line);
+                      }
+                    }
+                  } else {
+                    // Handle plain text stream (Gemini Mode)
+                    assistantContent += chunk;
+                    setMessages((prev) => {
+                      const updated = [...prev];
+                      if (updated[assistantMessageIndex] && updated[assistantMessageIndex].role === 'assistant') {
+                        updated[assistantMessageIndex] = {
+                          role: 'assistant',
+                          content: assistantContent,
+                          mode: selectedMode,
+                        };
+                      }
+                      return updated;
+                    });
+                  }
+                }
+              }
+            }
+          }
+
+          setIsLoading(false);
+        } catch (error) {
+          console.error('Error regenerating response:', error);
+          toast({
+            title: "Error",
+            description: "Failed to regenerate response",
+            variant: "destructive",
+          });
+          // Remove the placeholder assistant message
+          setMessages((prev) => prev.slice(0, -1));
+          setIsLoading(false);
+        }
+      } else {
+        const errorData = await response.json();
+        toast({
+          title: "Error",
+          description: errorData.error || "Failed to update message",
+          variant: "destructive",
+        });
+      }
+    } catch (error) {
+      console.error('Error updating message:', error);
+      toast({
+        title: "Error",
+        description: "Network error. Please try again.",
+        variant: "destructive",
+      });
+    }
+  };
+
+  const handleCancelEdit = () => {
+    setEditingMessageId(null);
+    setEditContent('');
+  };
+
+  const [aiSettings, setAiSettings] = useState<AIModelSettings | null>(null);
+
+  useEffect(() => {
+    if (brandId) {
+      getAIModelSettingsAction(brandId).then(setAiSettings);
+    }
+  }, [brandId]);
+
+  const agentModeInfo: Record<AgentMode, ModeInfo> = {
+    'agent': {
+      name: 'AI Agent',
+      description: aiSettings?.agentModel ? `Model: ${aiSettings.agentModel}` : 'Autonomous agent with all AI capabilities',
+      icon: Sparkles
+    },
+  };
+
+  const aiModelsInfo: Record<AIModel, ModeInfo> = {
+    'gemini-text': {
+      name: 'Gemini Text',
+      description: aiSettings?.textModel ? `Model: ${aiSettings.textModel}` : 'Text generation and conversation',
+      icon: Sparkles
+    },
+    'imagen': {
+      name: 'Imagen 4.0',
+      description: aiSettings?.imageModel ? `Model: ${aiSettings.imageModel}` : 'Image generation from text',
+      icon: ImageIcon
+    },
+    'gemini-vision': {
+      name: 'Gemini Vision',
+      description: aiSettings?.imageEditModel ? `Model: ${aiSettings.imageEditModel}` : 'Image analysis and editing',
+      icon: ImageIcon
+    },
+    'veo': {
+      name: 'Veo 3.0',
+      description: aiSettings?.videoModel ? `Model: ${aiSettings.videoModel}` : 'Video generation',
+      icon: Video
+    },
+    'nano-banana': {
+      name: 'Nano Banana',
+      description: aiSettings?.imageEditModel ? `Model: ${aiSettings.imageEditModel}` : 'AI-powered image editing',
+      icon: Wand2
+    },
+  };
+
+  const teamToolsInfo: Record<TeamTool, ModeInfo> = {
+    'team-chat': {
+      name: 'Team Assistant',
+      description: aiSettings?.teamChatModel ? `Model: ${aiSettings.teamChatModel}` : 'General team help & strategy',
+      icon: Lightbulb
+    },
+    'event-creator': {
+      name: 'Event Creator',
+      description: aiSettings?.eventCreatorModel ? `Model: ${aiSettings.eventCreatorModel}` : 'Create events in natural language',
+      icon: Calendar
+    },
+    'domain-suggestions': {
+      name: 'Domain Names',
+      description: aiSettings?.domainSuggestionsModel ? `Model: ${aiSettings.domainSuggestionsModel}` : 'Get domain name ideas',
+      icon: Globe
+    },
+    'website-planning': {
+      name: 'Website Planning',
+      description: aiSettings?.websitePlanningModel ? `Model: ${aiSettings.websitePlanningModel}` : 'Plan your team website',
+      icon: TrendingUp,
+      requiresContext: true
+    },
+    'team-strategy': {
+      name: 'Team Strategy',
+      description: aiSettings?.teamStrategyModel ? `Model: ${aiSettings.teamStrategyModel}` : 'Create strategic plans',
+      icon: TrendingUp,
+      requiresContext: true
+    },
+    'logo-concepts': {
+      name: 'Logo Concepts',
+      description: aiSettings?.logoConceptsModel ? `Model: ${aiSettings.logoConceptsModel}` : 'Design logo & visual ideas',
+      icon: Palette,
+      requiresContext: true
+    },
+    'search': {
+      name: 'Search',
+      description: aiSettings?.searchModel ? `Model: ${aiSettings.searchModel}` : 'Search the web for information',
+      icon: Search,
+      requiresContext: false
+    },
+    'youtube-analysis': {
+      name: 'YouTube Analysis',
+      description: aiSettings?.youtubeAnalysisModel ? `Model: ${aiSettings.youtubeAnalysisModel}` : 'Analyze YouTube videos',
+      icon: Video
+    },
+    'crawl-website': {
+      name: 'Website Crawler',
+      description: 'Extract content from any website URL',
+      icon: Link
+    },
+    'memory': {
+      name: 'Memory',
+      description: 'Save and recall information from long-term memory',
+      icon: Brain
+    },
+    'rag-search': {
+      name: 'Document Search',
+      description: 'Search indexed brand documents (RAG)',
+      icon: Database
+    },
+    'media-search': {
+      name: 'Media Search',
+      description: 'Search images and videos in media library',
+      icon: Images
+    },
+    'media-index': {
+      name: 'Index Media',
+      description: 'Rebuild search index for better results',
+      icon: Database
+    },
+  };
+
+  const allModesInfo = { ...agentModeInfo, ...aiModelsInfo, ...teamToolsInfo };
+
+  const handleInjectMedia = (mediaUrl: string, mediaType: 'image' | 'video') => {
+    // Special handling for YouTube videos - they can't be sent as video attachments
+    // because YouTube URLs are not direct video file URLs
+    if (mediaType === 'video' && isYouTubeUrl(mediaUrl)) {
+      // For YouTube videos, add the URL to the input text instead of as an attachment
+      // This allows the agent to use the process_youtube_video tool
+      const youtubeText = input.trim() ? `${input}\n\nYouTube video: ${mediaUrl}` : `YouTube video: ${mediaUrl}`;
+      setInput(youtubeText);
+      toast({
+        title: "YouTube Video Added",
+        description: "The YouTube URL has been added to your message. The agent can analyze it using the YouTube Analysis tool.",
+      });
+      return;
+    }
+
+    // Add to attachments instead of sending immediately
+    // Mark as re-injected so robust system knows this is an EXPLICIT user selection
+    const attachment: MediaAttachment = {
+      type: mediaType,
+      url: mediaUrl,
+      fileName: 'Re-injected Media',
+      mimeType: mediaType === 'image' ? 'image/png' : 'video/mp4',
+      // Add marker to indicate this is user's explicit selection
+      isReinjected: true,
+    };
+    setAttachments(prev => [...prev, attachment]);
+
+    // Focus input if possible (optional, but good UX)
+    // We don't have a ref for the Textarea easily accessible here without adding one,
+    // but the user will likely click to type anyway.
+    toast({
+      title: "Media Attached",
+      description: "You can now add text and send.",
+    });
+  };
+
+  const toggleMessageSelection = (messageId: string) => {
+    setSelectedMessageIds(prev =>
+      prev.includes(messageId)
+        ? prev.filter(id => id !== messageId)
+        : [...prev, messageId]
+    );
+  };
+
+  const sendMessage = async (content: string, mediaOverride?: MediaAttachment[]) => {
+    // Merge file attachments with detected image URLs
+    const imageUrlAttachments: MediaAttachment[] = detectedImageUrls.map(url => ({
+      type: 'image' as const,
+      url,
+      fileName: getImageFileName(url),
+      mimeType: getImageMimeType(url),
+    }));
+
+    const currentAttachments = mediaOverride || [...attachments, ...imageUrlAttachments];
+    if ((!content.trim() && currentAttachments.length === 0) || isLoading) return;
+
+    const userMessage: Message = {
+      role: 'user',
+      content: content.trim(),
+      media: currentAttachments.length > 0 ? [...currentAttachments] : undefined,
+      mode: selectedMode,
+    };
+
+    setInput('');
+    if (!mediaOverride) {
+      setAttachments([]);
+      setDetectedImageUrls([]);
+    }
+    setIsLoading(true);
+
+    // Add user message and placeholder assistant message
+    const assistantMessageIndex = messages.length + 1;
+    setMessages((prev) => {
+      return [...prev, userMessage, { role: 'assistant', content: '', mode: selectedMode }];
+    });
+
+    try {
+      // CRITICAL: Extract YouTube URLs from attachments BEFORE filtering them out
+      // This ensures we can save them as media even if they're not in the content
+      const youtubeUrlsFromAttachments: string[] = [];
+      if (userMessage.media && userMessage.media.length > 0) {
+        userMessage.media.forEach((m) => {
+          if (m.type === 'video' && m.url && isYouTubeUrl(m.url)) {
+            youtubeUrlsFromAttachments.push(m.url);
+            console.log('[GeminiChatbot] 🔍 Found YouTube URL in attachments (will save as media):', m.url);
+          }
+        });
+      }
+
+      // Upload media files to Firebase Storage and get URLs
+      let mediaData: Pick<MediaAttachment, 'type' | 'url' | 'fileName' | 'mimeType' | 'isReinjected'>[] = [];
+
+      if (userMessage.media && userMessage.media.length > 0) {
+        // Filter media with actual files to upload OR Data URIs that need conversion
+        // Track original indices to preserve isReinjected flag correctly
+        const filesToUpload: { file: File, type: string, originalIndex: number }[] = [];
+        const existingMedia: MediaAttachment[] = [];
+
+        userMessage.media.forEach((m, originalIndex) => {
+          // Skip YouTube URLs - they can't be processed as video attachments
+          // They should be included in the message text instead
+          // BUT we've already extracted them above to save as media
+          if (m.type === 'video' && m.url && isYouTubeUrl(m.url)) {
+            console.log('[GeminiChatbot] Skipping YouTube URL from media attachments - will be saved as media separately:', m.url);
+            return; // Skip this media item
+          }
+
+          if (m.file) {
+            filesToUpload.push({ file: m.file, type: m.type, originalIndex });
+          } else if (m.url && m.url.startsWith('data:')) {
+            // Convert Data URI to File for upload
+            try {
+              const filename = m.fileName || `reinjected-${Date.now()}.${m.type === 'image' ? 'png' : 'mp4'}`;
+              const file = dataURLtoFile(m.url, filename);
+              filesToUpload.push({ file, type: m.type, originalIndex });
+            } catch (e) {
+              console.error('Failed to convert Data URI to file:', e);
+              // Fallback: keep as existing media if conversion fails
+              existingMedia.push(m);
+            }
+          } else if (m.url) {
+            // Remote URL (Firebase Storage) - keep as is
+            existingMedia.push(m);
+          }
+        });
+
+        if (filesToUpload.length > 0) {
+          if (!brandId) {
+            toast({
+              title: "⚠️ Upload Failed",
+              description: "Missing Brand ID. Media cannot be saved.",
+              variant: "destructive",
+            });
+            // Fallback: Add to existing media so it's at least sent (though it might fail on backend if too large)
+            // Actually, if it's a Data URI, backend might reject it if it expects a URL.
+            // But let's try to keep it to avoid total loss.
+            // However, without brandId, we probably can't save chat history either.
+          } else {
+            try {
+              // Notify user that media is being processed
+              const mediaTypes = [...new Set(filesToUpload.map(m => m.type))];
+              toast({
+                title: "📤 Uploading Media...",
+                description: `Processing ${filesToUpload.length} ${mediaTypes.join(', ')} file${filesToUpload.length > 1 ? 's' : ''}`,
+              });
+
+              // Upload to Firebase Storage
+              const uploadedMedia = await uploadMultipleChatMedia(
+                filesToUpload.map(f => ({ file: f.file, type: f.type as 'image' | 'video' | 'pdf' | 'audio' })),
+                brandId,
+                user?.uid || 'anonymous' // Use actual User ID for storage path
+              );
+
+              const uploadedMediaData = uploadedMedia.map((m, idx) => {
+                // Get the original index from filesToUpload to correctly map back to userMessage.media
+                const originalIndex = filesToUpload[idx].originalIndex;
+                const originalAttachment = userMessage.media?.[originalIndex];
+                
+                return {
+                  type: m.type as 'image' | 'video' | 'pdf' | 'audio',
+                  url: m.url, // Firebase Storage download URL
+                  fileName: m.fileName,
+                  mimeType: m.mimeType,
+                  // Preserve isReinjected flag from the CORRECT original attachment
+                  isReinjected: (originalAttachment as any)?.isReinjected || false,
+                };
+              });
+
+              mediaData = [...mediaData, ...uploadedMediaData];
+
+              // Update user message in state with permanent URLs
+              setMessages((prev) => {
+                const updated = [...prev];
+                // Find the user message. It's usually at assistantMessageIndex - 1, 
+                // but safest to find it by reference or content if possible.
+                // Since we just added it, it's at prev.length - 2 (before the assistant placeholder)
+                const userMsgIndex = updated.length - 2;
+                if (userMsgIndex >= 0 && updated[userMsgIndex].role === 'user') {
+                  updated[userMsgIndex] = {
+                    ...updated[userMsgIndex],
+                    media: mediaData.map(m => ({
+                      type: m.type as 'image' | 'video' | 'pdf' | 'audio',
+                      url: m.url,
+                      fileName: m.fileName,
+                      mimeType: m.mimeType
+                    }))
+                  };
+                }
+                return updated;
+              });
+
+              // Save uploaded media to Media Library (Unified Media)
+              uploadedMedia.forEach(media => {
+                if (media.type === 'image') {
+                  const imageId = `upload-img-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+                  saveUploadedImageAction(
+                    brandId,
+                    imageId,
+                    media.url,
+                    media.fileName || 'Uploaded Image',
+                    media.mimeType || 'image/png'
+                  ).catch(err => console.error('Failed to save uploaded image to library:', err));
+                } else if (media.type === 'video') {
+                  const videoId = `upload-vid-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+                  saveUploadedVideoAction(
+                    brandId,
+                    videoId,
+                    media.url,
+                    media.fileName || 'Uploaded Video',
+                    media.mimeType || 'video/mp4'
+                  ).catch(err => console.error('Failed to save uploaded video to library:', err));
+                }
+              });
+
+              // Notify upload complete
+              toast({
+                title: "✅ Media Uploaded",
+                description: `${uploadedMedia.length} file${uploadedMedia.length > 1 ? 's' : ''} ready for AI processing`,
+              });
+            } catch (uploadError) {
+              console.error('[GeminiChatbot] Media upload failed:', uploadError);
+              toast({
+                title: "❌ Upload Failed",
+                description: "Failed to upload media. Please try again.",
+                variant: "destructive",
+              });
+              // Don't re-throw, let the message send without media (or with partial media)
+              // or maybe we should stop?
+              // For now, let's continue but the media won't be attached.
+            }
+          }
+        }
+
+
+        // Add existing media (remote URLs) that doesn't need uploading
+        // Filter out YouTube URLs - they should be in the message text, not as attachments
+        const existingMediaData = existingMedia
+          .filter(m => {
+            // Skip YouTube URLs - they can't be processed as video attachments
+            if (m.type === 'video' && m.url && isYouTubeUrl(m.url)) {
+              console.log('[GeminiChatbot] Filtering out YouTube URL from existing media:', m.url);
+              return false;
+            }
+            return true;
+          })
+          .map(m => {
+            let type = m.type as string;
+            // Normalize backend types to frontend types
+            if (type === 'file_api' || type === 'inline') {
+              if (m.mimeType?.startsWith('image/')) type = 'image';
+              else if (m.mimeType?.startsWith('video/')) type = 'video';
+              else if (m.mimeType === 'application/pdf') type = 'pdf';
+              else if (m.mimeType?.startsWith('audio/')) type = 'audio';
+            }
+            return {
+              type: type as 'image' | 'video' | 'pdf' | 'audio',
+              url: m.url,
+              fileName: m.fileName || 'Re-injected Media',
+              mimeType: m.mimeType,
+              // CRITICAL: Preserve isReinjected flag
+              isReinjected: m.isReinjected || false,
+            };
+          });
+
+        mediaData = [...mediaData, ...existingMediaData];
+      }
+
+      console.log('[GeminiChatbot] Sending message with media:', {
+        userMessageMedia: userMessage.media,
+        mediaData: mediaData
+      });
+
+      // Save user message to history immediately
+      // Track the active conversation ID for this message chain
+      let activeConversationId = currentConversationId !== DEFAULT_CONVERSATION_ID ? currentConversationId : undefined;
+
+      if (brandId) {
+        try {
+          // Extract YouTube URLs from content and add them as media attachments for persistence
+          // This ensures YouTube videos are saved and can be displayed when loading chat history
+          // CRITICAL: This MUST work for both:
+          // 1. Pasted directly: "https://youtube.com/watch?v=..."
+          // 2. Injected from media library: "YouTube video: https://youtube.com/watch?v=..."
+          // CRITICAL: Extract YouTube URLs from THREE sources:
+          // 1. Content text (for pasted links or "YouTube video: " prefix)
+          // 2. Attachments that were filtered out (for media library injections)
+          // 3. Already in mediaData (shouldn't happen, but check anyway)
+          
+          const contentToExtract = userMessage.content;
+          console.log('[GeminiChatbot] 🔍 SAVING - Content to extract from:', contentToExtract);
+          console.log('[GeminiChatbot] 🔍 SAVING - Content length:', contentToExtract.length);
+          console.log('[GeminiChatbot] 🔍 SAVING - YouTube URLs from attachments:', youtubeUrlsFromAttachments);
+          console.log('[GeminiChatbot] 🔍 SAVING - Current mediaData:', mediaData);
+          
+          // Use a single, comprehensive regex that matches YouTube URLs anywhere in the text
+          const youtubeUrlRegex = /(?:https?:\/\/)?(?:www\.)?(?:youtube\.com\/(?:watch\?v=|embed\/|v\/)|youtu\.be\/)([a-zA-Z0-9_-]{11})/gi;
+          const contentMatches = Array.from(contentToExtract.matchAll(youtubeUrlRegex));
+          
+          console.log(`[GeminiChatbot] 🔍 SAVING - Found ${contentMatches.length} YouTube URL match(es) in content, ${youtubeUrlsFromAttachments.length} from attachments`);
+          
+          const youtubeMedia: MediaAttachment[] = [];
+          const seenVideoIds = new Set<string>();
+          
+          // First, extract from content
+          for (const match of contentMatches) {
+            const videoId = match[1];
+            const fullMatch = match[0];
+            
+            if (seenVideoIds.has(videoId)) continue;
+            seenVideoIds.add(videoId);
+            
+            const youtubeUrl = `https://www.youtube.com/watch?v=${videoId}`;
+            
+            const alreadyInMedia = mediaData.some(m => {
+              if (!m.url) return false;
+              const existingVideoId = m.url.match(/(?:youtube\.com\/watch\?v=|youtu\.be\/)([a-zA-Z0-9_-]{11})/)?.[1];
+              return existingVideoId === videoId;
+            });
+            
+            if (!alreadyInMedia) {
+              youtubeMedia.push({
+                type: 'video',
+                url: youtubeUrl,
+                fileName: 'YouTube Video',
+                mimeType: 'video/youtube',
+              });
+              console.log(`[GeminiChatbot] ✅ SAVING - Extracted YouTube URL from content: ${youtubeUrl} (video ID: ${videoId}, matched: "${fullMatch}")`);
+            }
+          }
+          
+          // Second, add YouTube URLs from attachments (media library injections)
+          for (const youtubeUrl of youtubeUrlsFromAttachments) {
+            const videoIdMatch = youtubeUrl.match(/(?:youtube\.com\/watch\?v=|youtu\.be\/)([a-zA-Z0-9_-]{11})/);
+            if (!videoIdMatch) continue;
+            
+            const videoId = videoIdMatch[1];
+            if (seenVideoIds.has(videoId)) {
+              console.log(`[GeminiChatbot] ⚠️ SAVING - YouTube URL from attachments already found: ${youtubeUrl}`);
+              continue;
+            }
+            seenVideoIds.add(videoId);
+            
+            // Normalize to standard format
+            const normalizedUrl = `https://www.youtube.com/watch?v=${videoId}`;
+            
+            const alreadyInMedia = mediaData.some(m => {
+              if (!m.url) return false;
+              const existingVideoId = m.url.match(/(?:youtube\.com\/watch\?v=|youtu\.be\/)([a-zA-Z0-9_-]{11})/)?.[1];
+              return existingVideoId === videoId;
+            });
+            
+            if (!alreadyInMedia) {
+              youtubeMedia.push({
+                type: 'video',
+                url: normalizedUrl,
+                fileName: 'YouTube Video',
+                mimeType: 'video/youtube',
+              });
+              console.log(`[GeminiChatbot] ✅ SAVING - Added YouTube URL from attachments: ${normalizedUrl} (video ID: ${videoId})`);
+            }
+          }
+          
+          // Combine regular media with YouTube media for saving
+          // CRITICAL: Always include YouTube media even if it's the only media
+          const allMedia = [...mediaData, ...youtubeMedia];
+          console.log(`[GeminiChatbot] 📦 SAVING - Total media to save: ${allMedia.length} (regular: ${mediaData.length}, YouTube: ${youtubeMedia.length})`);
+          
+          // CRITICAL: Ensure media is always included if we have any YouTube URLs
+          const savePayload = {
+            brandId,
+            role: 'user',
+            content: userMessage.content, // Save original content with YouTube URL
+            media: allMedia.length > 0 ? allMedia : undefined,
+            mode: selectedMode,
+            conversationId: activeConversationId,
+          };
+          
+          console.log('[GeminiChatbot] 📤 SAVING - Payload being sent:', {
+            brandId: savePayload.brandId,
+            role: savePayload.role,
+            contentLength: savePayload.content.length,
+            contentPreview: savePayload.content.substring(0, 100),
+            mediaCount: savePayload.media?.length || 0,
+            mediaDetails: savePayload.media?.map(m => ({ 
+              type: m.type, 
+              url: m.url?.substring(0, 70),
+              mimeType: m.mimeType 
+            })),
+          });
+
+          const saveResponse = await fetch('/api/chat/history', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(savePayload),
+          });
+
+          if (saveResponse.ok) {
+            const saveData = await saveResponse.json();
+            console.log(`[GeminiChatbot] ✅ Message saved successfully:`, {
+              messageId: saveData.messageId,
+              conversationId: saveData.conversationId,
+              mediaCount: allMedia.length,
+              mediaItems: allMedia.map(m => ({ type: m.type, url: m.url?.substring(0, 50) + '...' })),
+            });
+            // If a new conversation was created, update the active conversation ID
+            if (saveData.conversationId && saveData.newConversation) {
+              activeConversationId = saveData.conversationId;
+              setCurrentConversationId(saveData.conversationId);
+              console.log(`[GeminiChatbot] Auto-created conversation: ${saveData.conversationId}`);
+            }
+          } else {
+            const errorData = await saveResponse.json().catch(() => ({}));
+            console.error(`[GeminiChatbot] ❌ Failed to save message:`, {
+              status: saveResponse.status,
+              error: errorData,
+              mediaCount: allMedia.length,
+            });
+          }
+          refreshConversations();
+        } catch (err) {
+          console.error('Failed to save user message:', err);
+        }
+      }
+
+      const response = await fetch('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          messages: [...messages, userMessage],
+          mode: selectedMode,
+          media: mediaData,
+          brandId,
+          teamContext: selectedCategory === 'team-tools' ? teamContext : undefined,
+          selectedContext: messages.filter(m => selectedMessageIds.includes(m.id!)),
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to get response');
+      }
+
+      const contentType = response.headers.get('content-type');
+
+      // Handle streaming response (NDJSON for Agent, text/plain for Gemini)
+      // We check both Content-Type and the actual content to be robust
+      const isNdjsonHeader = contentType?.includes('application/x-ndjson');
+
+      if (isNdjsonHeader || contentType?.includes('text/plain') || contentType?.includes('application/json')) {
+        const reader = response.body?.getReader();
+        const decoder = new TextDecoder();
+        let assistantContent = '';
+        let thinkingProcess: string[] = [];
+        let generatedMedia: MediaAttachment[] = [];
+        let structuredData: any = null;
+        let currentExplainability: any = null; // Track explainability for saving to history
+        let isNdjson = isNdjsonHeader; // Trust header initially, but verify with content if needed
+
+        if (reader) {
+          let buffer = '';
+          let firstChunkChecked = false;
+
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+
+            const chunk = decoder.decode(value, { stream: true });
+
+            // Auto-detect NDJSON from content if header didn't specify it
+            if (!firstChunkChecked && !isNdjson) {
+              const trimmedChunk = chunk.trim();
+              if (trimmedChunk.startsWith('{"type":') || trimmedChunk.startsWith('{"type" :')) {
+                console.log('Auto-detected NDJSON stream from content');
+                isNdjson = true;
+              }
+              firstChunkChecked = true;
+            }
+
+            if (isNdjson) {
+              // Handle NDJSON stream (Agent Mode)
+              console.log('[Streaming] Processing NDJSON chunk, size:', chunk.length);
+              buffer += chunk;
+              const lines = buffer.split('\n');
+              buffer = lines.pop() || ''; // Keep incomplete line in buffer
+
+              for (const line of lines) {
+                if (!line.trim()) continue;
+                console.log('[Streaming] Parsed NDJSON line:', line.substring(0, 50) + '...');
+
+                try {
+                  const event = JSON.parse(line);
+
+                  if (event.type === 'log') {
+                    // Add to thinking process
+                    thinkingProcess.push(event.content);
+                    // Update UI to show thinking
+                    setMessages((prev) => {
+                      const updated = [...prev];
+                      if (updated[assistantMessageIndex] && updated[assistantMessageIndex].role === 'assistant') {
+                        updated[assistantMessageIndex] = {
+                          ...updated[assistantMessageIndex],
+                          content: assistantContent || 'Thinking...', // Show thinking if no content yet
+                          thoughts: [...thinkingProcess],
+                        };
+                      }
+                      return updated;
+                    });
+                  } else if (event.type === 'image') {
+                    // Handle generated image
+                    const imgData = event.data;
+                    let url = '';
+                    if (imgData.format === 'url') {
+                      url = imgData.url;
+                    } else if (imgData.format === 'base64') {
+                      url = `data:image/png;base64,${imgData.data}`;
+                    }
+
+                    if (url) {
+                      generatedMedia.push({
+                        type: 'image',
+                        url: url,
+                        fileName: imgData.prompt
+                      });
+
+                      // Create explainability for Agent-generated images
+                      const agentExplainability = imgData.explainability || {
+                        summary: `Image generated by AI Agent using Imagen 4.0 with prompt: "${imgData.prompt || 'Generated Image'}"`,
+                        confidence: 0.85,
+                        appliedControls: ['AI Agent Generation', 'Imagen 4.0'],
+                        brandElements: [],
+                        avoidedElements: []
+                      };
+
+                      // Track explainability for saving to history
+                      currentExplainability = agentExplainability;
+
+                      // Update UI immediately with image and explainability
+                      setMessages((prev) => {
+                        const updated = [...prev];
+                        updated[assistantMessageIndex] = {
+                          ...updated[assistantMessageIndex],
+                          media: [...generatedMedia],
+                          explainability: agentExplainability
+                        };
+                        return updated;
+                      });
+
+                      // Save to Media Library (Unified Media)
+                      if (brandId) {
+                        const imageId = `chatbot-img-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+                        saveChatbotImageAction(
+                          brandId,
+                          imageId,
+                          imgData.prompt || 'Generated Image',
+                          url
+                        ).then(() => {
+                          toast({
+                            title: "Image Saved",
+                            description: "The generated image has been saved to your library.",
+                          });
+                        }).catch(err => {
+                          console.error('Failed to save generated image to library:', err);
+                          toast({
+                            title: "Failed to save image",
+                            description: "The image was generated but could not be saved to your library.",
+                            variant: "destructive",
+                          });
+                        });
+                      }
+                    }
+                  } else if (event.type === 'video') {
+                    // Handle generated video
+                    const vidData = event.data;
+                    let url = '';
+                    if (vidData.format === 'url') {
+                      url = vidData.url;
+                    } else if (vidData.format === 'base64') {
+                      url = `data:video/mp4;base64,${vidData.data}`;
+                    }
+
+                    if (url) {
+                      generatedMedia.push({
+                        type: 'video',
+                        url: url,
+                        fileName: vidData.prompt
+                      });
+
+                      // Create explainability for Agent-generated videos
+                      const videoExplainability = vidData.explainability || {
+                        summary: `Video generated by AI Agent using Veo 2 with prompt: "${vidData.prompt || 'Generated Video'}"`,
+                        confidence: 0.85,
+                        appliedControls: ['AI Agent Generation', 'Veo 2'],
+                        brandElements: [],
+                        avoidedElements: []
+                      };
+
+                      // Track explainability for saving to history
+                      currentExplainability = videoExplainability;
+
+                      setMessages((prev) => {
+                        const updated = [...prev];
+                        updated[assistantMessageIndex] = {
+                          ...updated[assistantMessageIndex],
+                          media: [...generatedMedia],
+                          explainability: videoExplainability
+                        };
+                        return updated;
+                      });
+
+                      // Save to Media Library (Unified Media)
+                      if (brandId) {
+                        const videoId = `chatbot-vid-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+                        console.log('Calling saveChatbotVideoAction (Agent) for video:', videoId);
+                        saveChatbotVideoAction(
+                          brandId,
+                          videoId,
+                          vidData.prompt || 'Generated Video',
+                          url,
+                          vidData.input_image_url,
+                          vidData.character_reference_url,
+                          vidData.start_frame_url,
+                          vidData.end_frame_url
+                        ).then(result => {
+                          if (result.video && result.video.videoUrl) {
+                            // Update with permanent URL
+                            setMessages((prev) => {
+                              const updated = [...prev];
+                              if (updated[assistantMessageIndex]) {
+                                const currentMedia = updated[assistantMessageIndex].media || [];
+                                const mediaIndex = currentMedia.findIndex(m => m.url === url);
+                                if (mediaIndex !== -1) {
+                                  currentMedia[mediaIndex].url = result.video!.videoUrl;
+                                  updated[assistantMessageIndex] = {
+                                    ...updated[assistantMessageIndex],
+                                    media: [...currentMedia]
+                                  };
+                                }
+                              }
+                              return updated;
+                            });
+                          }
+                          toast({
+                            title: "Video Saved",
+                            description: "The generated video has been saved to your library.",
+                          });
+                        }).catch(err => {
+                          console.error('Failed to save generated video to library:', err);
+                          toast({
+                            title: "Failed to save video",
+                            description: "The video was generated but could not be saved to your library.",
+                            variant: "destructive",
+                          });
+                        });
+                      }
+                    }
+                  } else if (event.type === 'text') {
+                    assistantContent += event.content;
+                    setMessages((prev) => {
+                      const updated = [...prev];
+                      if (updated[assistantMessageIndex] && updated[assistantMessageIndex].role === 'assistant') {
+                        updated[assistantMessageIndex] = {
+                          ...updated[assistantMessageIndex],
+                          content: assistantContent,
+                          thoughts: thinkingProcess.length > 0 ? thinkingProcess : undefined,
+                        };
+                      }
+                      return updated;
+                    });
+                  } else if (event.type === 'data') {
+                    structuredData = event.data;
+                  } else if (event.type === 'context_update') {
+                    // Update context stats
+                    if (event.token_usage !== undefined) {
+                      setContextStats({
+                        tokenUsage: event.token_usage,
+                        maxTokens: event.max_tokens || 30000,
+                        activeMedia: event.active_media || []
+                      });
+                    }
+                  } else if (event.type === 'final_response') {
+                    assistantContent = event.content;
+
+                    // Extract __IMAGE_URL__ and __VIDEO_URL__ markers from content
+                    // These are used by media search tools to display images in chat
+                    // Use non-greedy match to capture URL between markers
+                    const imageUrlMatches = assistantContent.matchAll(/__IMAGE_URL__(.+?)__IMAGE_URL__/g);
+                    for (const match of imageUrlMatches) {
+                      if (match[1]) {
+                        generatedMedia.push({
+                          type: 'image',
+                          url: match[1].trim(),
+                        });
+                      }
+                    }
+                    const videoUrlMatches = assistantContent.matchAll(/__VIDEO_URL__(.+?)__VIDEO_URL__/g);
+                    for (const match of videoUrlMatches) {
+                      if (match[1]) {
+                        generatedMedia.push({
+                          type: 'video',
+                          url: match[1].trim(),
+                        });
+                      }
+                    }
+
+                    // Clean the markers from displayed content
+                    const cleanedContent = assistantContent
+                      .replace(/__IMAGE_URL__.+?__IMAGE_URL__/g, '')
+                      .replace(/__VIDEO_URL__.+?__VIDEO_URL__/g, '')
+                      .trim();
+                    assistantContent = cleanedContent;
+
+                    // Final update - include explainability if available
+                    setMessages((prev) => {
+                      const updated = [...prev];
+                      updated[assistantMessageIndex] = {
+                        role: 'assistant',
+                        content: assistantContent,
+                        mode: selectedMode,
+                        media: generatedMedia.length > 0 ? deduplicateMedia(generatedMedia) : undefined,
+                        structuredData: structuredData,
+                        thoughts: thinkingProcess.length > 0 ? thinkingProcess : undefined,
+                        explainability: currentExplainability || undefined,
+                      };
+                      return updated;
+                    });
+
+                    // Save the complete assistant message to history (including explainability)
+                    if (brandId) {
+                      fetch('/api/chat/history', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                          brandId,
+                          role: 'assistant',
+                          content: assistantContent,
+                          media: generatedMedia.length > 0 ? deduplicateMedia(generatedMedia) : undefined,
+                          thoughts: thinkingProcess.length > 0 ? thinkingProcess : undefined,
+                          structuredData: structuredData,
+                          explainability: currentExplainability || undefined,
+                          conversationId: activeConversationId,
+                        }),
+                      }).then(() => refreshConversations()).catch(err => console.error('Failed to save assistant message:', err));
+                    }
+                  } else if (event.type === 'error') {
+                    console.error('Stream error:', event.content);
+                    toast({
+                      title: "Error during processing",
+                      description: event.content,
+                      variant: "destructive"
+                    });
+                  }
+                } catch (e) {
+                  console.error('Error parsing NDJSON line:', e, line);
+                  // Fallback: treat as text if JSON parse fails? 
+                  // No, better to ignore invalid lines in NDJSON mode
+                }
+              }
+            } else {
+              // Handle plain text stream (Gemini Mode)
+              assistantContent += chunk;
+              setMessages((prev) => {
+                const updated = [...prev];
+                if (updated[assistantMessageIndex] && updated[assistantMessageIndex].role === 'assistant') {
+                  updated[assistantMessageIndex] = {
+                    role: 'assistant',
+                    content: assistantContent,
+                    mode: selectedMode,
+                  };
+                }
+                return updated;
+              });
+            }
+          }
+
+          // After loop, if it was plain text stream, save to history
+          if (!isNdjson && assistantContent && brandId) {
+            let finalContent = assistantContent;
+            const generatedMedia: MediaAttachment[] = [];
+            let structuredData: any = null;
+
+            // Helper to extract and remove markers
+            const extractMarker = (content: string, marker: string, nextMarkers: string[]) => {
+              const startPos = content.indexOf(marker);
+              if (startPos === -1) return { content: content, data: null };
+
+              const dataStart = startPos + marker.length;
+              let dataEnd = content.length;
+
+              // Find earliest next marker or double newline
+              for (const nextMarker of [...nextMarkers, '\n\n']) {
+                const pos = content.indexOf(nextMarker, dataStart);
+                if (pos !== -1 && pos < dataEnd) {
+                  dataEnd = pos;
+                }
+              }
+
+              const data = content.substring(dataStart, dataEnd).trim();
+              const newContent = content.substring(0, startPos) + content.substring(dataEnd);
+              return { content: newContent, data };
+            };
+
+            // Parse markers for Image Data
+            let imageResult = { content: finalContent, data: null as string | null };
+            while (true) {
+              const result = extractMarker(imageResult.content, '__IMAGE_DATA__', ['__VIDEO_DATA__', '__EXPLAINABILITY__']);
+              if (result.data) {
+                const rawData = result.data;
+                let imageUrl = rawData;
+                if (rawData.startsWith('://')) {
+                  imageUrl = 'https' + rawData;
+                } else if (!rawData.startsWith('http') && !rawData.startsWith('data:')) {
+                  imageUrl = `data:image/png;base64,${rawData}`;
+                }
+                generatedMedia.push({
+                  type: 'image',
+                  url: imageUrl,
+                  fileName: 'Generated Image'
+                });
+                imageResult = result;
+              } else {
+                break;
+              }
+            }
+            finalContent = imageResult.content;
+
+            // Parse markers for Video Data
+            let videoResult = { content: finalContent, data: null as string | null };
+            while (true) {
+              const result = extractMarker(videoResult.content, '__VIDEO_DATA__', ['__IMAGE_DATA__', '__EXPLAINABILITY__']);
+              if (result.data) {
+                const rawData = result.data;
+                let videoUrl = rawData;
+                if (rawData.startsWith('://')) {
+                  videoUrl = 'https' + rawData;
+                } else if (!rawData.startsWith('http') && !rawData.startsWith('data:')) {
+                  videoUrl = `data:video/mp4;base64,${rawData}`;
+                }
+                generatedMedia.push({
+                  type: 'video',
+                  url: videoUrl,
+                  fileName: 'Generated Video'
+                });
+                videoResult = result;
+              } else {
+                break;
+              }
+            }
+            finalContent = videoResult.content;
+
+            // Parse markers for Explainability
+            const explainabilityResult = extractMarker(finalContent, '__EXPLAINABILITY__', ['__IMAGE_DATA__', '__VIDEO_DATA__']);
+            if (explainabilityResult.data) {
+              try {
+                structuredData = JSON.parse(explainabilityResult.data);
+                finalContent = explainabilityResult.content;
+              } catch (e) {
+                console.error('Failed to parse explainability data', e);
+              }
+            }
+
+            // Save to history and update UI
+            const saveHistoryAndUpdateUI = async () => {
+              // Upload media if needed
+              for (const media of generatedMedia) {
+                if (media.url.startsWith('data:')) {
+                  try {
+                    const filename = media.fileName || `generated-${Date.now()}.${media.type === 'image' ? 'png' : 'mp4'}`;
+                    const file = dataURLtoFile(media.url, filename);
+                    const uploaded = await uploadMultipleChatMedia(
+                      [{ file, type: media.type }],
+                      brandId,
+                      user?.uid || 'anonymous'
+                    );
+                    if (uploaded && uploaded.length > 0) {
+                      media.url = uploaded[0].url; // Update with permanent URL
+                    }
+                  } catch (e) {
+                    console.error('Failed to upload generated media:', e);
+                    // Keep base64 if upload fails, though it might fail later in Firestore
+                  }
+                }
+              }
+
+              // Now save to Media Library with permanent URLs
+              if (brandId) {
+                for (const media of generatedMedia) {
+                  if (media.type === 'image') {
+                    const imageId = `chatbot-img-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+                    saveChatbotImageAction(
+                      brandId,
+                      imageId,
+                      content || 'Generated Image',
+                      media.url,
+                      structuredData // Pass explainability data
+                    ).then(() => {
+                      toast({
+                        title: "Image Saved",
+                        description: "The generated image has been saved to your library.",
+                      });
+                    }).catch(err => {
+                      console.error('Failed to save generated image to library:', err);
+                      toast({
+                        title: "Failed to save image",
+                        description: "The image was generated but could not be saved to your library.",
+                        variant: "destructive",
+                      });
+                    });
+                  } else if (media.type === 'video') {
+                    const videoId = `chatbot-vid-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+                    console.log('Calling saveChatbotVideoAction (AI Models) for video:', videoId);
+                    saveChatbotVideoAction(
+                      brandId,
+                      videoId,
+                      content || 'Generated Video',
+                      media.url
+                    ).then(() => {
+                      toast({
+                        title: "Video Saved",
+                        description: "The generated video has been saved to your library.",
+                      });
+                    }).catch(err => {
+                      console.error('Failed to save generated video to library:', err);
+                      toast({
+                        title: "Failed to save video",
+                        description: "The video was generated but could not be saved to your library.",
+                        variant: "destructive",
+                      });
+                    });
+                  }
+                }
+              }
+
+              // Update UI with parsed content and permanent media URLs
+              setMessages((prev) => {
+                const updated = [...prev];
+                if (updated[assistantMessageIndex] && updated[assistantMessageIndex].role === 'assistant') {
+                  updated[assistantMessageIndex] = {
+                    role: 'assistant',
+                    content: finalContent.trim(),
+                    mode: selectedMode,
+                    media: generatedMedia.length > 0 ? deduplicateMedia(generatedMedia) : undefined,
+                    structuredData: structuredData,
+                  };
+                }
+                return updated;
+              });
+
+              // Save to history with permanent URLs
+              fetch('/api/chat/history', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  brandId,
+                  role: 'assistant',
+                  content: finalContent.trim(),
+                  mode: selectedMode,
+                  media: generatedMedia.length > 0 ? deduplicateMedia(generatedMedia) : undefined,
+                  structuredData: structuredData,
+                  conversationId: activeConversationId,
+                }),
+              }).then(() => refreshConversations()).catch(err => console.error('Failed to save assistant message (text):', err));
+            };
+
+            saveHistoryAndUpdateUI();
+          }
+        }
+      } else if (contentType?.includes('application/json')) {
+        // Handle legacy JSON response (fallback)
+        const data = await response.json();
+        // ... (existing JSON handling logic if needed, but we expect streaming now)
+        // We can keep the old logic here just in case, or simplify since we migrated
+
+        // Reuse the existing logic for parsing markers if it falls back to JSON
+        const originalContent = data.content || '';
+        // ... (copy existing logic for markers if needed, but let's assume stream works)
+
+        setMessages((prev) => {
+          const updated = [...prev];
+          updated[assistantMessageIndex] = {
+            role: 'assistant',
+            content: originalContent,
+            mode: selectedMode,
+            structuredData: data.data,
+          };
+          return updated;
+        });
+      }
+
+      setIsLoading(false);
+      setSelectedMessageIds([]); // Clear selection after successful send
+    } catch (error) {
+      console.error('Error sending message:', error);
+      toast({
+        title: "Error",
+        description: "Failed to send message",
+        variant: "destructive",
+      });
+      // Remove the placeholder assistant message
+      setMessages((prev) => prev.slice(0, -1));
+      setIsLoading(false);
+    }
+  };
+
+
+
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    sendMessage(input);
+  };
+
+  const handleExampleClick = (example: string) => {
+    sendMessage(example);
+  };
+
+  const handleOpenCampaign = async (campaignData: CampaignData) => {
+    if (!brandId || !campaignData) return;
+
+    setIsSavingCampaign(true);
+
+    try {
+      // Import the save campaign action dynamically
+      const {
+        saveCampaignAction,
+        saveChatbotImageAction,
+        saveChatbotVideoAction
+      } = await import('@/app/actions');
+
+      // Transform campaignDays to GeneratedCampaignContent format
+      const generatedContent = campaignData.campaignDays.map((day) => ({
+        day: day.day,
+        date: day.date,
+        contentBlocks: day.contentBlocks.map((block) => ({
+          id: block.id,
+          contentType: block.contentType,
+          adCopy: block.keyMessage,
+          imagePrompt: `Generate an image for: ${block.keyMessage}`,
+          keyMessage: block.keyMessage,
+          toneOfVoice: block.toneOfVoice,
+          scheduledTime: block.scheduledTime,
+        })),
+      }));
+
+      // Save the campaign
+      const result = await saveCampaignAction(
+        brandId,
+        generatedContent,
+        null,
+        campaignData.campaignName,
+        null,
+        campaignData.prompt || null,
+        (campaignData as any).characterConsistency || null
+      );
+
+      if (result.error) {
+        throw new Error(result.message);
+      }
+
+      // Store the campaign ID to auto-load it
+      if (result.campaignId) {
+        sessionStorage.setItem('autoLoadCampaignId', result.campaignId);
+      }
+
+      // Close the AI Assistant panel
+      closeChatbot();
+
+      // Navigate to the home page where the campaign editor is
+      router.push('/');
+    } catch (error) {
+      console.error('Failed to create campaign:', error);
+      alert(`Failed to create campaign: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    } finally {
+      setIsSavingCampaign(false);
+    }
+  };
+
+  // Create event without generating AI content - just save structure to calendar
+  const handleCreateEvent = async (campaignData: CampaignData) => {
+    if (!brandId || !campaignData) return;
+
+    setIsSavingCampaign(true);
+
+    try {
+      // Call the new create-campaign API (no AI generation)
+      const response = await fetch('/api/create-campaign', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          prompt: campaignData.prompt,
+          brandId,
+          characterConsistency: (campaignData as any).characterConsistency,
+        }),
+      });
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.error || 'Failed to create campaign');
+      }
+
+      const createdCampaign: CampaignData & { contentGenerated: boolean } = await response.json();
+
+      console.log('[Frontend] Campaign created (without AI content):', {
+        campaignId: createdCampaign.campaignId,
+        campaignName: createdCampaign.campaignName,
+        totalDays: createdCampaign.campaignDays?.length || 0,
+        contentGenerated: createdCampaign.contentGenerated,
+      });
+
+      if (!createdCampaign.campaignId) {
+        throw new Error('Campaign was not saved properly');
+      }
+
+      // Close the AI Assistant panel
+      closeChatbot();
+
+      // Store campaign ID in sessionStorage for auto-load and trigger page refresh
+      if (typeof window !== 'undefined') {
+        sessionStorage.setItem('autoLoadCampaignId', createdCampaign.campaignId);
+        window.location.href = '/';
+      }
+    } catch (error) {
+      console.error('Failed to create campaign:', error);
+
+      toast({
+        variant: 'destructive',
+        title: 'Event Creation Failed',
+        description: error instanceof Error ? error.message : 'Unknown error occurred',
+      });
+    } finally {
+      setIsSavingCampaign(false);
+    }
+  };
+
+  // Legacy: Generate event with AI content (text + images)
+  const handleGenerateCampaign = async (campaignData: CampaignData) => {
+    if (!brandId || !campaignData) return;
+
+    setIsSavingCampaign(true);
+
+    // Add job to the queue
+    const duration = campaignData.campaignRequest?.duration || 1;
+    const jobId = addJob({
+      type: 'campaign-generation',
+      title: campaignData.campaignName || 'Campaign',
+      description: `${duration} day${duration !== 1 ? 's' : ''} • Generating content with AI`,
+      status: 'running',
+      metadata: {
+        startDate: campaignData.campaignRequest?.startDate,
+        duration,
+      },
+    });
+
+    // Store loading state immediately for calendar to show spinners
+    // Use localStorage for persistence across page refreshes during long generation
+    if (typeof window !== 'undefined') {
+      localStorage.setItem('pendingCampaign', JSON.stringify({
+        startDate: campaignData.campaignRequest?.startDate,
+        duration: campaignData.campaignRequest?.duration || 1,
+        timestamp: Date.now(),
+        jobId, // Link to job queue
+      }));
+    }
+
+    // Close chatbot immediately to show calendar loading state
+    closeChatbot();
+
+    try {
+      // Update progress as we go
+      setProgress(jobId, 10);
+
+      // Call the generation API endpoint
+      const response = await fetch('/api/generate-campaign-content', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          prompt: campaignData.prompt,
+          brandId,
+          // Pass character consistency config if provided
+          characterConsistency: (campaignData as any).characterConsistency,
+        }),
+      });
+
+      setProgress(jobId, 50);
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.error || 'Failed to generate campaign');
+      }
+
+      const generatedCampaign: CampaignData = await response.json();
+
+      setProgress(jobId, 80);
+
+      console.log('[Frontend] Generated campaign received:', {
+        campaignName: generatedCampaign.campaignName,
+        totalDays: generatedCampaign.campaignDays?.length || 0,
+        totalBlocks: generatedCampaign.campaignDays?.reduce((sum, day) => sum + (day.contentBlocks?.length || 0), 0) || 0,
+        firstDay: generatedCampaign.campaignDays?.[0],
+      });
+
+      // Campaign is auto-saved by the API, use the returned campaignId
+      console.log('[Frontend] Using auto-saved campaign:', {
+        campaignId: generatedCampaign.campaignId,
+        campaignName: generatedCampaign.campaignName,
+        totalDays: generatedCampaign.campaignDays?.length || 0,
+        totalBlocks: generatedCampaign.campaignDays?.reduce((sum, day) => sum + (day.contentBlocks?.length || 0), 0) || 0,
+      });
+
+      if (!generatedCampaign.campaignId) {
+        throw new Error('Campaign was generated but not saved properly');
+      }
+
+      // Mark job as completed
+      completeJob(jobId, { resultUrl: '/' });
+
+      // Close the AI Assistant panel
+      closeChatbot();
+
+      // Store campaign ID in sessionStorage for auto-load and trigger page refresh
+      if (typeof window !== 'undefined') {
+        sessionStorage.setItem('autoLoadCampaignId', generatedCampaign.campaignId);
+        localStorage.removeItem('pendingCampaign');
+        sessionStorage.removeItem('pendingCampaign');
+        window.location.href = '/';
+      }
+    } catch (error) {
+      console.error('Failed to generate campaign:', error);
+
+      // Mark job as failed
+      failJob(jobId, error instanceof Error ? error.message : 'Unknown error occurred');
+
+      // Clear pending campaign state on error
+      if (typeof window !== 'undefined') {
+        localStorage.removeItem('pendingCampaign');
+        sessionStorage.removeItem('pendingCampaign');
+      }
+
+      toast({
+        variant: 'destructive',
+        title: 'Event Generation Failed',
+        description: error instanceof Error ? error.message : 'Unknown error occurred',
+      });
+    } finally {
+      setIsSavingCampaign(false);
+    }
+  };
+
+  const isCampaignData = (data: any): data is StructuredData & CampaignData => {
+    if (!data) return false;
+    // For preview data (generate-campaign action), we want to be lenient to ensure the button shows
+    return (data.action === 'generate-campaign' || data.action === 'navigate-to-campaign' || 'campaignName' in data);
+  };
+
+  const renderStructuredData = (data: StructuredData) => {
+    if (!data) return null;
+
+    // Special handling for AI campaign generation
+    if (data.action === 'generate-campaign') {
+      const characterConsistency = (data as any).characterConsistency;
+      const hasCharacterConsistency = characterConsistency?.enabled && characterConsistency?.characters?.length > 0;
+
+      return (
+        <div className="mt-3 space-y-3">
+          <div className="bg-background/50 rounded-lg p-3 border">
+            <h4 className="font-semibold mb-2">Event Creator</h4>
+            <div className="text-sm space-y-1">
+              <p><span className="text-muted-foreground">Name:</span> {(data as any).campaignName}</p>
+              <p><span className="text-muted-foreground">Duration:</span> {(data as any).campaignRequest?.duration || 1} days</p>
+              <p><span className="text-muted-foreground">Start:</span> {(data as any).campaignRequest?.startDate ? parseISODateAsLocal((data as any).campaignRequest.startDate).toLocaleDateString() : 'Today'}</p>
+              <p><span className="text-muted-foreground">Total Posts:</span> {(data as any).totalPosts || ((data as any).campaignDays ? (data as any).campaignDays.reduce((sum: number, day: any) => sum + day.contentBlocks.length, 0) : 'TBD')}</p>
+              {hasCharacterConsistency && (
+                <div className="mt-2 pt-2 border-t border-border/50">
+                  <p className="text-xs font-medium text-primary flex items-center gap-1">
+                    <Sparkles className="w-3 h-3" />
+                    Character Consistency Enabled
+                  </p>
+                  <p className="text-xs text-muted-foreground">
+                    {characterConsistency.characters.length} character sheet(s) • Same characters across all images
+                  </p>
+                </div>
+              )}
+              <p className="text-xs text-muted-foreground mt-2">
+                📅 Creates event on calendar. Generate content later from the editor.
+              </p>
+            </div>
+          </div>
+          {/* Primary: Create Event (no AI generation) */}
+          <Button
+            onClick={() => handleCreateEvent(data as any)}
+            disabled={isSavingCampaign}
+            className="w-full"
+          >
+            {isSavingCampaign ? (
+              <>
+                <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                Creating Event...
+              </>
+            ) : (
+              <>
+                <Calendar className="w-4 h-4 mr-2" />
+                Create Event
+              </>
+            )}
+          </Button>
+        </div>
+      );
+    }
+
+    // Legacy handling for old campaigns (kept for backward compatibility)
+    if (data.action === 'navigate-to-campaign') {
+      return (
+        <div className="mt-3 space-y-3">
+          <div className="bg-background/50 rounded-lg p-3 border">
+            <h4 className="font-semibold mb-2">Event Summary</h4>
+            <div className="text-sm space-y-1">
+              <p><span className="text-muted-foreground">Name:</span> {(data as any).campaignName}</p>
+              <p><span className="text-muted-foreground">Duration:</span> {(data as any).campaignRequest?.duration || 1} days</p>
+              <p><span className="text-muted-foreground">Start:</span> {(data as any).campaignRequest?.startDate ? parseISODateAsLocal((data as any).campaignRequest.startDate).toLocaleDateString() : 'Today'}</p>
+              <p><span className="text-muted-foreground">Posts per day:</span> {(data as any).campaignRequest?.postsPerDay || 'Varies'}</p>
+            </div>
+          </div>
+          <Button
+            onClick={() => handleOpenCampaign(data as any)}
+            disabled={isSavingCampaign}
+            className="w-full"
+          >
+            {isSavingCampaign ? (
+              <>
+                <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                Saving Event...
+              </>
+            ) : (
+              <>
+                <Calendar className="w-4 h-4 mr-2" />
+                Open Event Editor
+              </>
+            )}
+          </Button>
+        </div>
+      );
+    }
+
+    return (
+      <div className="mt-3 space-y-2 bg-background/50 rounded-lg p-3 border">
+        {Object.entries(data).map(([key, value]) => {
+          if (Array.isArray(value)) {
+            return (
+              <div key={key}>
+                <p className="font-medium text-xs uppercase tracking-wide text-muted-foreground mb-1">{key}</p>
+                <ul className="list-disc list-inside space-y-1">
+                  {value.map((item, i) => (
+                    <li key={i} className="text-sm">{typeof item === 'object' ? JSON.stringify(item) : String(item)}</li>
+                  ))}
+                </ul>
+              </div>
+            );
+          } else if (typeof value === 'object' && value !== null) {
+            return (
+              <div key={key}>
+                <p className="font-medium text-xs uppercase tracking-wide text-muted-foreground mb-1">{key}</p>
+                <div className="ml-3 space-y-1">
+                  {Object.entries(value).map(([k, v]) => (
+                    <p key={k} className="text-sm"><span className="font-medium">{k}:</span> {String(v)}</p>
+                  ))}
+                </div>
+              </div>
+            );
+          } else {
+            return (
+              <div key={key}>
+                <p className="text-sm"><span className="font-medium text-muted-foreground">{key}:</span> {String(value)}</p>
+              </div>
+            );
+          }
+        })}
+      </div>
+    );
+  };
+
+  const currentExamples = examplePrompts[selectedCategory];
+  const currentModes = selectedCategory === 'ai-models' ? aiModelsInfo : teamToolsInfo;
+
+  return (
+    <div className="flex h-full bg-background">
+      {/* Conversation Sidebar */}
+      <ConversationSidebar
+        brandId={brandId || ''}
+        onSelectConversation={handleSelectConversation}
+        onNewConversation={handleNewConversation}
+      />
+
+      {/* Main Chat Area */}
+      <div className="flex flex-col h-full flex-1 min-w-0">
+      {/* Compact Header */}
+      <div className="flex flex-col border-b bg-muted/30">
+        {/* Context Meter */}
+        {contextStats && (
+          <div className="w-full px-3 py-2 border-b bg-background/50">
+            <div className="flex items-center justify-between mb-1.5">
+              <div className="flex items-center gap-2">
+                <span className="text-xs font-medium text-muted-foreground">Context Usage</span>
+                <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-muted text-muted-foreground">
+                  {Math.round((contextStats.tokenUsage / contextStats.maxTokens) * 100)}%
+                </span>
+              </div>
+              <div className="flex items-center gap-3 text-xs text-muted-foreground">
+                <span>{contextStats.tokenUsage.toLocaleString()} / {contextStats.maxTokens.toLocaleString()} tokens</span>
+                {contextStats.activeMedia.length > 0 && (
+                  <span className="flex items-center gap-1 text-primary">
+                    <ImageIcon className="w-3 h-3" />
+                    {contextStats.activeMedia.length} active media
+                  </span>
+                )}
+              </div>
+            </div>
+            <div className="h-1.5 w-full bg-secondary rounded-full overflow-hidden">
+              <div
+                className={`h-full transition-all duration-500 ${(contextStats.tokenUsage / contextStats.maxTokens) > 0.9 ? 'bg-red-500' :
+                  (contextStats.tokenUsage / contextStats.maxTokens) > 0.75 ? 'bg-amber-500' : 'bg-primary'
+                  }`}
+                style={{ width: `${Math.min(100, (contextStats.tokenUsage / contextStats.maxTokens) * 100)}%` }}
+              />
+            </div>
+          </div>
+        )}
+
+        <div className="p-3">
+          {/* Category Tabs */}
+          <Tabs value={selectedCategory} onValueChange={(v) => setSelectedCategory(v as ModeCategory)} className="mb-2">
+            <TabsList className="grid w-full grid-cols-3">
+              <TabsTrigger value="agent" className="text-sm">🤖 Agent</TabsTrigger>
+              <TabsTrigger value="ai-models" className="text-sm">AI Models</TabsTrigger>
+              <TabsTrigger value="team-tools" className="text-sm">Team Tools</TabsTrigger>
+            </TabsList>
+          </Tabs>
+
+          {/* Mode Selector with Clear History Button */}
+          <div className="flex gap-2">
+            <Select value={selectedMode} onValueChange={(v) => setSelectedMode(v as UnifiedMode)}>
+              <SelectTrigger className="flex-1">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {Object.entries(currentModes).map(([key, info]) => {
+                  const Icon = info.icon;
+                  return (
+                    <SelectItem key={key} value={key}>
+                      <div className="flex flex-col items-start">
+                        <span className="font-medium">{info.name}</span>
+                        <span className="text-xs text-muted-foreground">{info.description}</span>
+                      </div>
+                    </SelectItem>
+                  );
+                })}
+              </SelectContent>
+            </Select>
+
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button variant="outline" size="icon" className="shrink-0">
+                  <MoreVertical className="h-4 w-4" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                <DropdownMenuLabel>Chat History</DropdownMenuLabel>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem onClick={openConversationSidebar}>
+                  <MessageSquare className="mr-2 h-4 w-4" />
+                  Browse Conversations
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => loadChatHistory()} disabled={isLoading}>
+                  <History className="mr-2 h-4 w-4" />
+                  Load Previous Messages
+                </DropdownMenuItem>
+                {messages.length > 0 && (
+                  <DropdownMenuItem onSelect={(e) => {
+                    e.preventDefault();
+                    setTimeout(() => setShowClearDialog(true), 100);
+                  }}>
+                    <Trash2 className="mr-2 h-4 w-4" />
+                    Clear Chat History
+                  </DropdownMenuItem>
+                )}
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </div>
+        </div>
+      </div>
+
+      {/* Team Context Form (for Team Tools) */}
+      {showContextForm && (
+        <div className="p-4 border-b bg-muted/20">
+          <div className="flex items-center justify-between mb-2">
+            <Label className="text-sm font-medium">Team Context (Optional)</Label>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              onClick={() => setShowContextForm(false)}
+            >
+              Hide
+            </Button>
+          </div>
+          <div className="grid grid-cols-2 gap-2">
+            <Input
+              placeholder="Team Name"
+              value={teamContext.teamName || ''}
+              onChange={(e) => setTeamContext({ ...teamContext, teamName: e.target.value })}
+              className="text-sm"
+            />
+            <Input
+              placeholder="Team Type"
+              value={teamContext.teamType || ''}
+              onChange={(e) => setTeamContext({ ...teamContext, teamType: e.target.value })}
+              className="text-sm"
+            />
+            <Input
+              placeholder="Focus Area"
+              value={teamContext.focus || ''}
+              onChange={(e) => setTeamContext({ ...teamContext, focus: e.target.value })}
+              className="text-sm"
+            />
+            <Input
+              placeholder="Target Audience"
+              value={teamContext.targetAudience || ''}
+              onChange={(e) => setTeamContext({ ...teamContext, targetAudience: e.target.value })}
+              className="text-sm"
+            />
+          </div>
+          <p className="text-xs text-muted-foreground mt-2">
+            Providing team context helps generate more personalized results
+          </p>
+        </div>
+      )}
+
+      {/* Messages */}
+      <div ref={messagesContainerRef} className="flex-1 overflow-y-auto p-4 space-y-4 min-h-0">
+        {messages.length === 0 ? (
+          <div className="text-center py-6">
+            <Sparkles className="w-10 h-10 mx-auto text-muted-foreground/50 mb-3" />
+            <p className="text-sm text-muted-foreground mb-3">
+              {selectedCategory === 'ai-models'
+                ? 'Start a conversation with AI'
+                : 'Get team help and strategic guidance'
+              }
+            </p>
+            <div className="grid gap-2 max-w-md mx-auto">
+              {currentExamples.map((prompt, index) => (
+                <Button
+                  key={index}
+                  variant="outline"
+                  className="text-left justify-start h-auto py-2 px-3"
+                  onClick={() => handleExampleClick(prompt)}
+                  disabled={isLoading}
+                >
+                  <span className="text-sm">{prompt}</span>
+                </Button>
+              ))}
+            </div>
+          </div>
+        ) : (
+          messages.map((message, index) => (
+            <div
+              key={index}
+              className={`flex gap-3 ${message.role === 'user' ? 'justify-end' : 'justify-start'
+                }`}
+            >
+              {message.role === 'assistant' && (
+                <div className="flex-shrink-0 w-8 h-8 rounded-full bg-primary/10 flex items-center justify-center">
+                  <Sparkles className="w-4 h-4 text-primary" />
+                </div>
+              )}
+              <div className="max-w-[80%]">
+                {message.media && message.media.length > 0 && (
+                  <div className={`mb-2 grid gap-2 ${message.media.length > 1 ? 'grid-cols-2' : 'grid-cols-1'}`}>
+                    {message.media.map((media, i) => {
+                      const mediaKey = `${index}-${i}`;
+                      const hasMediaError = mediaErrors[mediaKey];
+
+                      return (
+                        <div key={mediaKey} className="relative rounded-lg overflow-hidden border">
+                          {media.type === 'image' ? (
+                            hasMediaError ? (
+                              <div className="p-3 flex items-center gap-2 bg-muted text-sm text-muted-foreground">
+                                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"></path>
+                                </svg>
+                                <span>Image generated successfully</span>
+                              </div>
+                            ) : (
+                              <div className="flex flex-col">
+                                <img
+                                  src={media.url}
+                                  alt="Attachment"
+                                  className="max-w-full h-auto max-h-[400px] object-contain"
+                                  onError={() => {
+                                    setMediaErrors(prev => ({ ...prev, [mediaKey]: true }));
+                                  }}
+                                />
+                                <div className="p-2 flex justify-between items-center border-t bg-muted/20">
+                                  <Button
+                                    variant="ghost"
+                                    size="sm"
+                                    className="h-7 text-xs gap-1.5 text-muted-foreground hover:text-primary"
+                                    onClick={() => handleInjectMedia(media.url, 'image')}
+                                    title="Re-inject this image into context"
+                                  >
+                                    <Upload className="w-3 h-3" />
+                                    Re-inject
+                                  </Button>
+                                  <Button variant="outline" size="sm" className="h-7 text-xs gap-1.5" asChild>
+                                    <a
+                                      href={media.url}
+                                      target="_blank"
+                                      rel="noopener noreferrer"
+                                      download={`image-${Date.now()}.png`}
+                                      title="Open image in new tab (right-click to save as)"
+                                    >
+                                      <ExternalLink className="w-3 h-3" />
+                                      Open Image
+                                    </a>
+                                  </Button>
+                                </div>
+                              </div>
+                            )
+                          ) : media.type === 'video' ? (
+                            hasMediaError ? (
+                              <div className="p-3 flex items-center gap-2 bg-muted text-sm text-muted-foreground">
+                                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z"></path>
+                                </svg>
+                                <span>Video generated successfully</span>
+                              </div>
+                            ) : (
+                              <div className="flex flex-col">
+                                {isYouTubeUrl(media.url) ? (
+                                  <iframe
+                                    src={getYouTubeEmbedUrl(media.url) || ''}
+                                    className="w-full bg-black"
+                                    style={{ height: '300px', maxHeight: '400px' }}
+                                    allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+                                    allowFullScreen
+                                  />
+                                ) : media.url ? (
+                                  <video
+                                    src={media.url}
+                                    controls
+                                    preload="metadata"
+                                    playsInline
+                                    className="max-w-full h-auto bg-black object-contain"
+                                    style={{ maxHeight: '400px', width: '100%' }}
+                                    onError={() => {
+                                      // Set media error state to show fallback UI
+                                      setMediaErrors(prev => ({ ...prev, [mediaKey]: true }));
+                                    }}
+                                  >
+                                    Your browser does not support the video tag.
+                                  </video>
+                                ) : (
+                                  <div className="flex items-center justify-center h-40 bg-muted/20 text-muted-foreground text-sm">
+                                    Video URL not available
+                                  </div>
+                                )}
+                                <div className="p-2 flex justify-between items-center border-t bg-muted/20">
+                                  <Button
+                                    variant="ghost"
+                                    size="sm"
+                                    className="h-7 text-xs gap-1.5 text-muted-foreground hover:text-primary"
+                                    onClick={() => handleInjectMedia(media.url, 'video')}
+                                    title="Re-inject this video into context"
+                                  >
+                                    <Upload className="w-3 h-3" />
+                                    Re-inject
+                                  </Button>
+                                  <Button variant="outline" size="sm" className="h-7 text-xs gap-1.5" asChild>
+                                    <a
+                                      href={media.url}
+                                      target="_blank"
+                                      rel="noopener noreferrer"
+                                      download={`video-${Date.now()}.mp4`}
+                                      title="Open video in new tab (right-click to save as)"
+                                    >
+                                      <ExternalLink className="w-3 h-3" />
+                                      Open Video
+                                    </a>
+                                  </Button>
+                                </div>
+                              </div>
+                            )
+                          ) : media.type === 'pdf' ? (
+                            <div className="p-3 flex items-center gap-2 bg-muted">
+                              <FileText className="w-5 h-5 text-muted-foreground" />
+                              <span className="text-sm">{media.fileName || 'PDF Document'}</span>
+                            </div>
+                          ) : media.type === 'audio' ? (
+                            <div className="p-3">
+                              <div className="flex items-center gap-2 mb-2">
+                                <Music className="w-5 h-5 text-muted-foreground" />
+                                <span className="text-sm">{media.fileName || 'Audio File'}</span>
+                              </div>
+                              <audio src={media.url} controls className="w-full" />
+                            </div>
+                          ) : null}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+                {message.explainability && (
+                  <div className="mb-2">
+                    <BrandSoulExplainability explainability={message.explainability} />
+                  </div>
+                )}
+                <Card
+                  onClick={() => message.id && toggleMessageSelection(message.id)}
+                  className={`p-3 relative group rounded-2xl cursor-pointer transition-all ${selectedMessageIds.includes(message.id!) ? 'ring-2 ring-primary/50 scale-[1.02] shadow-lg' : ''
+                    } ${message.role === 'user'
+                      ? 'bg-primary text-primary-foreground shadow-md rounded-tr-none'
+                      : 'bg-muted/50 border border-border/50 shadow-sm rounded-tl-none text-foreground'
+                    }`}
+                >
+                  {selectedMessageIds.includes(message.id!) && (
+                    <div className="absolute -top-2 -right-2 bg-primary text-primary-foreground rounded-full p-1 shadow-md z-20">
+                      <Brain className="w-3 h-3" />
+                    </div>
+                  )}
+                  {/* Edit/Delete buttons - shown on hover */}
+
+
+                  {editingMessageId === message.id ? (
+                    <div className="space-y-2">
+                      <Textarea
+                        value={editContent}
+                        onChange={(e) => setEditContent(e.target.value)}
+                        className={`min-h-[100px] ${message.role === 'user'
+                          ? 'bg-primary-foreground/10 text-primary-foreground border-primary-foreground/20'
+                          : 'bg-background'
+                          }`}
+                        autoFocus
+                      />
+                      <div className="flex gap-2 justify-end">
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={handleCancelEdit}
+                        >
+                          <XCircle className="h-4 w-4 mr-1" />
+                          Cancel
+                        </Button>
+                        <Button
+                          size="sm"
+                          onClick={() => handleSaveEdit(message.id!)}
+                          disabled={!editContent.trim()}
+                        >
+                          <Check className="h-4 w-4 mr-1" />
+                          Save & Regenerate
+                        </Button>
+                      </div>
+                    </div>
+                  ) : (
+                    <>
+                      <div className={`text-sm prose prose-sm max-w-none ${message.role === 'user'
+                        ? 'prose-invert prose-headings:text-primary-foreground prose-p:text-primary-foreground prose-strong:text-primary-foreground prose-em:text-primary-foreground prose-code:text-primary-foreground prose-a:text-primary-foreground prose-ul:text-primary-foreground prose-ol:text-primary-foreground prose-li:text-primary-foreground'
+                        : 'prose-headings:text-foreground prose-p:text-foreground prose-strong:text-foreground prose-em:text-foreground prose-code:text-foreground prose-a:text-primary prose-ul:text-foreground prose-ol:text-foreground prose-li:text-foreground'
+                        }`}>
+                        {(() => {
+                          // Show loading indicator for assistant placeholder messages (empty content while streaming)
+                          if (message.role === 'assistant' && !message.content && isLoading) {
+                            return (
+                              <div className="flex items-center gap-2 py-1">
+                                <Loader2 className="w-4 h-4 animate-spin text-primary" />
+                                <span className="text-muted-foreground">Thinking...</span>
+                              </div>
+                            );
+                          }
+
+                          // Check if content is structured JSON that needs special rendering
+                          try {
+                            const trimmed = message.content.trim();
+                            if ((trimmed.startsWith('{') && trimmed.endsWith('}')) ||
+                              (trimmed.startsWith('[') && trimmed.endsWith(']'))) {
+                              const data = JSON.parse(trimmed);
+
+                              // Handle Search Results - render directly, not through ReactMarkdown
+                              if (data.results && Array.isArray(data.results)) {
+                                return (
+                                  <div className="space-y-4">
+                                    <p className="font-medium">Found {data.results.length} results for &quot;{data.query}&quot;:</p>
+                                    {data.results.map((result: any, i: number) => (
+                                      <div key={i} className="border-l-2 border-primary/30 pl-3 py-1">
+                                        <a href={result.href || result.url} target="_blank" rel="noopener noreferrer" className="font-semibold text-primary hover:underline block mb-1">
+                                          {result.title}
+                                        </a>
+                                        <p className="text-sm opacity-90 mb-1">{result.body || result.snippet}</p>
+                                        <p className="text-xs text-muted-foreground truncate">{result.href || result.url}</p>
+                                      </div>
+                                    ))}
+                                  </div>
+                                );
+                              }
+
+                              // Handle Website Plan
+                              if (data.plan) {
+                                return (
+                                  <div className="space-y-4">
+                                    {data.message && <p className="font-medium">{data.message}</p>}
+                                    <pre className="bg-muted/30 p-3 rounded-md text-xs font-mono overflow-x-auto whitespace-pre-wrap">
+                                      {JSON.stringify(data.plan, null, 2)}
+                                    </pre>
+                                  </div>
+                                );
+                              }
+
+                              // Handle Generic Content Wrapper - if it's a string, render through markdown
+                              if (data.content && typeof data.content === 'string') {
+                                // Fall through to ReactMarkdown below
+                              } else if (data.content) {
+                                // Non-string content, render as JSON
+                                return (
+                                  <pre className="bg-muted/30 p-3 rounded-md text-xs font-mono overflow-x-auto whitespace-pre-wrap">
+                                    {JSON.stringify(data.content, null, 2)}
+                                  </pre>
+                                );
+                              }
+
+                              // Handle Error
+                              if (data.status === 'error') {
+                                return (
+                                  <div className="text-destructive flex items-center gap-2">
+                                    <span className="font-bold">Error:</span> {data.error}
+                                  </div>
+                                );
+                              }
+
+                              // For other JSON without special handling, fall through to show as JSON
+                              if (!data.content) {
+                                return (
+                                  <pre className="bg-muted/30 p-3 rounded-md text-xs font-mono overflow-x-auto whitespace-pre-wrap">
+                                    {JSON.stringify(data, null, 2)}
+                                  </pre>
+                                );
+                              }
+                            }
+                          } catch (e) {
+                            // Not JSON or failed to parse, render as markdown below
+                          }
+
+                          // Default: render content through ReactMarkdown
+                          // Extract string content if wrapped in JSON
+                          let contentToRender = message.content;
+                          try {
+                            const trimmed = message.content.trim();
+                            if (trimmed.startsWith('{') && trimmed.endsWith('}')) {
+                              const data = JSON.parse(trimmed);
+                              if (data.content && typeof data.content === 'string') {
+                                contentToRender = data.content;
+                              }
+                            }
+                          } catch (e) {
+                            // Use original content
+                          }
+
+                          return (
+                            <ReactMarkdown
+                              remarkPlugins={[remarkGfm]}
+                              components={{
+                                // Customize heading styles
+                                h1: ({ node, ...props }) => <h1 className="text-lg font-bold mt-4 mb-2 first:mt-0" {...props} />,
+                                h2: ({ node, ...props }) => <h2 className="text-base font-bold mt-3 mb-2 first:mt-0" {...props} />,
+                                h3: ({ node, ...props }) => <h3 className="text-sm font-bold mt-2 mb-1 first:mt-0" {...props} />,
+                                // Customize paragraph
+                                p: ({ node, ...props }) => <p className="mb-2 last:mb-0 leading-relaxed" {...props} />,
+                                // Customize lists
+                                ul: ({ node, ...props }) => <ul className="list-disc list-inside mb-2 space-y-1" {...props} />,
+                                ol: ({ node, ...props }) => <ol className="list-decimal list-inside mb-2 space-y-1" {...props} />,
+                                li: ({ node, ...props }) => <li className="leading-relaxed" {...props} />,
+                                // Customize code blocks
+                                code: ({ node, className, ...props }: any) => {
+                                  const isInline = !className;
+                                  return isInline ? (
+                                    <code className="bg-muted/50 px-1.5 py-0.5 rounded text-xs font-mono" {...props} />
+                                  ) : (
+                                    <code className="block bg-muted/50 p-2 rounded text-xs font-mono overflow-x-auto" {...props} />
+                                  );
+                                },
+                                // Customize links
+                                a: ({ node, ...props }: any) => <a className="underline hover:opacity-80" target="_blank" rel="noopener noreferrer" {...props} />,
+                                // Customize strong/bold
+                                strong: ({ node, ...props }) => <strong className="font-semibold" {...props} />,
+                                // Customize emphasis/italic
+                                em: ({ node, ...props }) => <em className="italic" {...props} />,
+                                // Customize blockquote
+                                blockquote: ({ node, ...props }) => <blockquote className="border-l-4 border-muted-foreground/30 pl-3 italic my-2" {...props} />,
+                                // Customize horizontal rule
+                                hr: ({ node, ...props }) => <hr className="my-3 border-muted-foreground/30" {...props} />,
+                                // Customize images - detect videos and render with video player
+                                img: ({ node, src, alt, ...props }: any) => {
+                                  const isVideo = src && (
+                                    src?.match(/\.(mp4|webm|mov|avi|mkv|m4v)(\?|$)/i) ||
+                                    src.includes('/video/') ||
+                                    src.includes('video%2F')
+                                  );
+                                  if (isVideo) {
+                                    return (
+                                      <video
+                                        src={src}
+                                        controls
+                                        className="my-2 w-full max-h-64 bg-black rounded-lg"
+                                        preload="metadata"
+                                      />
+                                    );
+                                  }
+                                  return (
+                                    <img
+                                      src={src}
+                                      alt={alt || ''}
+                                      className="my-2 rounded-lg max-h-64 object-contain"
+                                      {...props}
+                                    />
+                                  );
+                                },
+                              }}
+                            >
+                              {contentToRender}
+                            </ReactMarkdown>
+                          );
+                        })()}
+                        {/* Automatic YouTube Embeds from links in text */}
+                        {(() => {
+                          const youtubeRegex = /(?:https?:\/\/)?(?:www\.)?(?:youtube\.com\/watch\?v=|youtu\.be\/)([a-zA-Z0-9_-]{11})/;
+                          const match = message.content?.match(youtubeRegex);
+                          if (match && match[0]) {
+                            const videoId = match[1];
+                            const embedUrl = `https://www.youtube.com/embed/${videoId}`;
+                            return (
+                              <div className="mt-3 rounded-lg overflow-hidden border border-border/50 shadow-sm">
+                                <iframe
+                                  src={embedUrl}
+                                  className="w-full aspect-video"
+                                  allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+                                  allowFullScreen
+                                />
+                                <div className="p-2 bg-muted/20 flex justify-between items-center border-t">
+                                  <span className="text-xs text-muted-foreground truncate flex-1 mr-2">YouTube Video</span>
+                                  <Button
+                                    variant="ghost"
+                                    size="sm"
+                                    className="h-7 text-xs gap-1.5 text-muted-foreground hover:text-primary"
+                                    onClick={() => handleInjectMedia(match[0], 'video')}
+                                    title="Re-inject this video into context"
+                                  >
+                                    <Upload className="w-3 h-3" />
+                                    Re-inject
+                                  </Button>
+                                </div>
+                              </div>
+                            );
+                          }
+                          return null;
+                        })()}
+                      </div>
+                      {message.thoughts && message.thoughts.length > 0 && (
+                        <div className="mt-2 mb-1">
+                          <details className="text-xs text-muted-foreground group">
+                            <summary className="cursor-pointer hover:text-foreground transition-colors list-none flex items-center gap-1 font-medium">
+                              <span className="opacity-70 group-open:rotate-90 transition-transform">▶</span>
+                              Thinking Process ({message.thoughts.length} steps)
+                            </summary>
+                            <div className="mt-2 pl-2 border-l-2 border-muted space-y-1 max-h-60 overflow-y-auto bg-muted/20 p-2 rounded-r-md">
+                              {message.thoughts.map((thought, i) => (
+                                <div key={i} className="font-mono text-[10px] leading-tight border-b border-muted/50 last:border-0 pb-1 last:pb-0 mb-1 last:mb-0">
+                                  <span className="opacity-50 mr-2">{i + 1}.</span>
+                                  {thought}
+                                </div>
+                              ))}
+                            </div>
+                          </details>
+                        </div>
+                      )}
+                      {message.structuredData && renderStructuredData(message.structuredData)}
+                      {message.mode && (
+                        <p className="text-xs mt-2 opacity-70">
+                          {allModesInfo[message.mode as UnifiedMode]?.name || message.mode}
+                        </p>
+                      )}
+                    </>
+                  )}
+
+                  {/* Edit/Delete buttons - shown on hover, positioned at end to ensure z-index */}
+                  {message.id && (
+                    <div className={`absolute top-2 right-2 flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity z-10 ${message.role === 'user' ? 'text-primary-foreground/70' : 'text-muted-foreground'
+                      }`}>
+                      {message.role === 'user' && (
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-6 w-6 hover:bg-white/20 hover:text-white"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleEditMessage(message);
+                          }}
+                          title="Edit message"
+                        >
+                          <Edit2 className="h-3.5 w-3.5" />
+                        </Button>
+                      )}
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-6 w-6 hover:bg-white/20 hover:text-white"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setDeletingMessageId(message.id!);
+                          handleDeleteMessage(message.id!);
+                        }}
+                        title="Delete message"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </Button>
+                    </div>
+                  )}
+                </Card>
+              </div>
+              {message.role === 'user' && (
+                <div className="flex-shrink-0 w-8 h-8 rounded-full bg-primary flex items-center justify-center">
+                  <User className="w-4 h-4 text-primary-foreground" />
+                </div>
+              )}
+            </div>
+          ))
+        )}
+        {/* Show fallback loading indicator only if loading but no assistant placeholder message exists */}
+        {isLoading && !messages.some(m => m.role === 'assistant' && !m.content) && (
+          <div className="flex gap-3">
+            <div className="flex-shrink-0 w-8 h-8 rounded-full bg-primary/10 flex items-center justify-center">
+              <Sparkles className="w-4 h-4 text-primary" />
+            </div>
+            <Card className="p-3 bg-muted">
+              <Loader2 className="w-4 h-4 animate-spin text-muted-foreground" />
+            </Card>
+          </div>
+        )}
+        <div ref={messagesEndRef} />
+      </div>
+
+      {/* Input - Fixed at bottom */}
+      <form onSubmit={handleSubmit} className="p-3 border-t bg-muted/30">
+        {/* Attachments Preview */}
+        {attachments.length > 0 && (
+          <div className="mb-2 flex gap-2 flex-wrap">
+            {attachments.map((attachment, index) => (
+              <div key={index} className="relative group">
+                <div className="w-20 h-20 rounded-lg overflow-hidden border bg-muted">
+                  {attachment.type === 'image' ? (
+                    <img src={attachment.url} alt="Preview" className="w-full h-full object-cover" />
+                  ) : attachment.type === 'video' ? (
+                    <div className="w-full h-full flex items-center justify-center">
+                      <Video className="w-8 h-8 text-muted-foreground" />
+                    </div>
+                  ) : attachment.type === 'pdf' ? (
+                    <div className="w-full h-full flex flex-col items-center justify-center p-1">
+                      <FileText className="w-6 h-6 text-muted-foreground" />
+                      <span className="text-[8px] mt-1 text-center truncate w-full">{attachment.fileName}</span>
+                    </div>
+                  ) : (
+                    <div className="w-full h-full flex flex-col items-center justify-center p-1">
+                      <Music className="w-6 h-6 text-muted-foreground" />
+                      <span className="text-[8px] mt-1 text-center truncate w-full">{attachment.fileName}</span>
+                    </div>
+                  )}
+                </div>
+                <Button
+                  type="button"
+                  size="icon"
+                  variant="destructive"
+                  className="absolute -top-2 -right-2 w-6 h-6 rounded-full opacity-0 group-hover:opacity-100 transition-opacity"
+                  onClick={() => removeAttachment(index)}
+                >
+                  <X className="w-3 h-3" />
+                </Button>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* Detected Image URLs Preview */}
+        {detectedImageUrls.length > 0 && (
+          <div className="mb-2 flex gap-2 flex-wrap">
+            {detectedImageUrls.map((imageUrl, index) => (
+              <div key={`url-${index}`} className="relative group">
+                <div className="w-20 h-20 rounded-lg overflow-hidden border border-primary/50 bg-muted">
+                  <img
+                    src={imageUrl}
+                    alt={`URL Preview ${index + 1}`}
+                    className="w-full h-full object-cover"
+                    onError={(e) => {
+                      // If image fails to load, show a placeholder
+                      (e.target as HTMLImageElement).style.display = 'none';
+                      (e.target as HTMLImageElement).nextElementSibling?.classList.remove('hidden');
+                    }}
+                  />
+                  <div className="hidden w-full h-full flex-col items-center justify-center p-1">
+                    <Link className="w-6 h-6 text-muted-foreground" />
+                    <span className="text-[8px] mt-1 text-center text-muted-foreground">Image URL</span>
+                  </div>
+                </div>
+                <div className="absolute -top-1 -left-1 w-5 h-5 rounded-full bg-primary flex items-center justify-center">
+                  <Link className="w-3 h-3 text-primary-foreground" />
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+
+        <div className="flex gap-2">
+          {(selectedCategory === 'ai-models' || selectedCategory === 'agent') && (
+            <>
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept="image/*,video/*,application/pdf,audio/*"
+                multiple
+                className="hidden"
+                onChange={handleFileSelect}
+              />
+              <Button
+                type="button"
+                size="icon"
+                variant="outline"
+                className="h-[60px] w-[60px]"
+                onClick={() => fileInputRef.current?.click()}
+                disabled={isLoading}
+                title="Upload images, videos, PDFs, or audio files"
+              >
+                <Upload className="w-5 h-5" />
+              </Button>
+            </>
+          )}
+          <Textarea
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            placeholder={
+              selectedCategory === 'ai-models'
+                ? "Type your message..."
+                : selectedMode === 'domain-suggestions'
+                  ? "Enter keywords (e.g., tech, startup, innovation)"
+                  : "Describe your business needs..."
+            }
+            className="min-h-[60px] resize-none"
+            disabled={isLoading}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                handleSubmit(e);
+              }
+            }}
+          />
+          <Button
+            type="submit"
+            size="icon"
+            disabled={(!input.trim() && attachments.length === 0) || isLoading}
+            className="h-[60px] w-[60px]"
+          >
+            {isLoading ? (
+              <Loader2 className="w-5 h-5 animate-spin" />
+            ) : (
+              <Send className="w-5 h-5" />
+            )}
+          </Button>
+        </div>
+        <p className="text-[10px] text-muted-foreground mt-1">
+          Press Enter to send, Shift+Enter for new line
+        </p>
+      </form>
+
+      {/* Clear History Confirmation Dialog */}
+      <Dialog open={showClearDialog} onOpenChange={setShowClearDialog}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Clear Chat History?</DialogTitle>
+            <DialogDescription>
+              This will permanently delete your entire conversation history with the AI assistant.
+              This action cannot be undone.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setShowClearDialog(false)}
+              disabled={isClearing}
+            >
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={handleClearHistory}
+              disabled={isClearing}
+            >
+              {isClearing ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  Clearing...
+                </>
+              ) : (
+                <>
+                  <Trash2 className="mr-2 h-4 w-4" />
+                  Clear History
+                </>
+              )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+      </div>
+    </div>
+  );
+}

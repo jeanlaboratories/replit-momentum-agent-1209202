@@ -1,0 +1,198 @@
+
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // Helper function to check if user is authenticated
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+    
+    // Helper function to get user ID
+    function getUserId() {
+      return request.auth.uid;
+    }
+    
+    // Helper function to check if user is a manager of a brand
+    function isManagerOfBrand(brandId) {
+      return isAuthenticated() && 
+        exists(/databases/$(database)/documents/brandMembers/$(brandId + '_' + getUserId())) &&
+        get(/databases/$(database)/documents/brandMembers/$(brandId + '_' + getUserId())).data.role == 'MANAGER' &&
+        get(/databases/$(database)/documents/brandMembers/$(brandId + '_' + getUserId())).data.status == 'ACTIVE';
+    }
+    
+    // Helper function to check if user is a member of a brand (any role)
+    function isMemberOfBrand(brandId) {
+      return isAuthenticated() && 
+        exists(/databases/$(database)/documents/brandMembers/$(brandId + '_' + getUserId())) &&
+        get(/databases/$(database)/documents/brandMembers/$(brandId + '_' + getUserId())).data.status == 'ACTIVE';
+    }
+    
+    // Users collection - users can only read/write their own profile
+    match /users/{userId} {
+      allow read, write: if isAuthenticated() && getUserId() == userId;
+    }
+    
+    // Brands collection - members can read, managers can write
+    match /brands/{brandId} {
+      allow read: if isMemberOfBrand(brandId);
+      allow write: if isManagerOfBrand(brandId);
+    }
+    
+    // Brand members collection - members can read, managers can write
+    match /brandMembers/{memberId} {
+      // Extract brandId from the memberId (format: brandId_userId)
+      function getBrandIdFromMemberId() {
+        return memberId.split('_')[0];
+      }
+      
+      function getUserIdFromMemberId() {
+        return memberId.split('_')[1];
+      }
+      
+      // Members can read all brand members, managers can write
+      allow read: if isMemberOfBrand(getBrandIdFromMemberId());
+      
+      // Managers can create members
+      allow create: if isManagerOfBrand(getBrandIdFromMemberId()) &&
+        // Ensure brandId and userId in document match the document ID
+        request.resource.data.brandId == getBrandIdFromMemberId() &&
+        request.resource.data.userId == getUserIdFromMemberId() &&
+        // Validate document ID format
+        memberId == request.resource.data.brandId + '_' + request.resource.data.userId;
+      
+      // Managers can update members
+      allow update: if isManagerOfBrand(getBrandIdFromMemberId()) &&
+        // Ensure brandId and userId cannot be changed
+        request.resource.data.brandId == resource.data.brandId &&
+        request.resource.data.userId == resource.data.userId;
+      
+      // Managers can delete members (set to inactive)
+      allow delete: if isManagerOfBrand(getBrandIdFromMemberId());
+      
+      // Users can update their own member record (limited fields)
+      allow update: if isAuthenticated() && 
+        getUserId() == getUserIdFromMemberId() &&
+        // Only allow updating specific fields
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['userDisplayName', 'userPhotoURL', 'updatedAt']) &&
+        // Ensure critical fields cannot be changed
+        request.resource.data.brandId == resource.data.brandId &&
+        request.resource.data.userId == resource.data.userId &&
+        request.resource.data.role == resource.data.role;
+    }
+    
+    // Brand invitations collection - managers can manage, invitees can read their own
+    match /brandInvitations/{invitationId} {
+      // Extract brandId from the invitationId (format: brandId_email)
+      function getBrandIdFromInvitationId() {
+        return invitationId.split('_')[0];
+      }
+      
+      // Managers can read all invitations for their brand
+      allow read: if isManagerOfBrand(getBrandIdFromInvitationId());
+      
+      // Managers can create invitations
+      allow create: if isManagerOfBrand(getBrandIdFromInvitationId()) &&
+        // Validate document ID format
+        invitationId == request.resource.data.brandId + '_' + request.resource.data.email.lower() &&
+        // Ensure brandId matches
+        request.resource.data.brandId == getBrandIdFromInvitationId();
+      
+      // Managers can update/delete invitations
+      allow update, delete: if isManagerOfBrand(getBrandIdFromInvitationId()) &&
+        // Ensure brandId cannot be changed
+        request.resource.data.brandId == resource.data.brandId;
+      
+      // Invited users can read their own invitation by email only
+      // Token-based access will be handled server-side for invitation acceptance
+      allow read: if isAuthenticated() && 
+        request.auth.token.email == resource.data.email;
+    }
+    
+    // Campaigns collection - brand members can read, managers and creators can write
+    match /campaigns/{campaignId} {
+      allow read: if isMemberOfBrand(resource.data.brandId);
+      allow create, update: if isMemberOfBrand(resource.data.brandId);
+      allow delete: if isManagerOfBrand(resource.data.brandId) || 
+        (getUserId() == resource.data.createdBy);
+    }
+    
+    // Videos collection - brand members can read, all can create, owners and managers can update/delete
+    match /videos/{videoId} {
+      allow read: if isMemberOfBrand(resource.data.brandId);
+      allow create: if isMemberOfBrand(request.resource.data.brandId);
+      allow update, delete: if isManagerOfBrand(resource.data.brandId) || 
+        (getUserId() == resource.data.createdBy);
+    }
+    
+    // Edited images collection - brand members can read, all can create, owners and managers can update/delete
+    match /editedImages/{imageId} {
+      allow read: if isMemberOfBrand(resource.data.brandId);
+      allow create: if isMemberOfBrand(request.resource.data.brandId);
+      allow update, delete: if isManagerOfBrand(resource.data.brandId) || 
+        (getUserId() == resource.data.createdBy);
+    }
+    
+    // ========================================================================
+    // Brand Soul Seeding Collections
+    // ========================================================================
+    
+    // Brand Artifacts - Sources for brand intelligence
+    match /brandArtifacts/{brandId}/sources/{artifactId} {
+      // Read: Any brand member can read artifacts
+      allow read: if isMemberOfBrand(brandId);
+      
+      // Create: Any brand member can add sources
+      allow create: if isMemberOfBrand(brandId) &&
+        request.resource.data.brandId == brandId &&
+        request.resource.data.createdBy == getUserId();
+      
+      // Update: Only managers can approve/reject insights
+      allow update: if isManagerOfBrand(brandId);
+      
+      // Delete: Only managers can delete artifacts
+      allow delete: if isManagerOfBrand(brandId);
+    }
+    
+    // Processing Jobs - Created/updated by server only
+    match /brandSoulJobs/{jobId} {
+      // Read: Brand members can read their own brand's jobs
+      allow read: if isMemberOfBrand(resource.data.brandId);
+      
+      // Write: System only (via Admin SDK)
+      allow write: if false;
+    }
+    
+    // Brand Soul - Published brand intelligence
+    match /brandSoul/{brandId} {
+      // Read: Any brand member can read
+      allow read: if isMemberOfBrand(brandId);
+      
+      // Write: System only (via Admin SDK)
+      allow write: if false;
+    }
+    
+    // Brand Soul Versions - Historical versions
+    match /brandSoulVersions/{brandId}/versions/{versionId} {
+      // Read: Any brand member can read
+      allow read: if isMemberOfBrand(brandId);
+      
+      // Write: System only (via Admin SDK)
+      allow write: if false;
+    }
+    
+    // POC Collections (temporary - remove after migration)
+    match /brand_artifacts_poc/{artifactId} {
+      allow read, write: if isAuthenticated();
+    }
+    
+    match /brand_soul_jobs_poc/{jobId} {
+      allow read, write: if isAuthenticated();
+    }
+    
+    // Default deny all other collections
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

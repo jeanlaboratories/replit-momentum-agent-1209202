@@ -1,0 +1,57 @@
+{
+  "timestamp": "2025-11-27T07:23:15.777238",
+  "suite_name": "MOMENTUM Extended Core Suite",
+  "summary": {
+    "total_tests": 100,
+    "passed_tests": 94,
+    "overall_accuracy": 94.0,
+    "stability_score": 99.26
+  },
+  "latency": {
+    "avg_ms": 6427.98,
+    "p50_ms": 3437.36,
+    "p95_ms": 22403.72,
+    "p99_ms": 29873.84
+  },
+  "cost": {
+    "total_tokens": 31712,
+    "total_cost_usd": 0.0052
+  },
+  "pass_at_k": {
+    "pass@1": 94.0,
+    "pass@3": 99.98,
+    "pass@5": 100.0
+  },
+  "tool_accuracy": {
+    "generate_image": 100.0,
+    "nano_banana": 100.0,
+    "web_search_agent": 100.0,
+    "crawl_website": 100.0,
+    "save_memory": 100.0,
+    "recall_memory": 100.0,
+    "no_tool": 0.0
+  },
+  "category_metrics": {
+    "tool_selection": {
+      "accuracy": 100.0,
+      "tool_selection_accuracy": 100.0,
+      "avg_latency_ms": 4724.51,
+      "tests": 60,
+      "passed": 60
+    },
+    "memory_persistence": {
+      "accuracy": 80.0,
+      "tool_selection_accuracy": 0.0,
+      "avg_latency_ms": 14462.16,
+      "tests": 5,
+      "passed": 4
+    },
+    "relevance_detection": {
+      "accuracy": 85.71,
+      "tool_selection_accuracy": 0.0,
+      "avg_latency_ms": 8200.47,
+      "tests": 35,
+      "passed": 30
+    }
+  }
+}
