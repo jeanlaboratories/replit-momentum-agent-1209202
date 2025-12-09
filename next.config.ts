@@ -1,5 +1,16 @@
 import type {NextConfig} from 'next';
 
+// Explicitly load .env file to ensure environment variables are available
+// Next.js 15 auto-loads .env, but this ensures it happens before config evaluation
+if (typeof require !== 'undefined') {
+  try {
+    require('dotenv').config({ path: '.env' });
+  } catch (e) {
+    // dotenv might not be available in all environments, that's okay
+    // Next.js will load .env automatically
+  }
+}
+
 const nextConfig: NextConfig = {
   /* config options here */
   env: {

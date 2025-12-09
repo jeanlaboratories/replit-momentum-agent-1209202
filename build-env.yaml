@@ -1,0 +1,20 @@
+# Build-time environment variables for Next.js NEXT_PUBLIC_* variables
+# These are embedded into the client bundle at build time
+
+NEXT_PUBLIC_FIREBASE_API_KEY: "AIzaSyCIY1QJRMwozJvP3a0ieDdXv5JmSry1wxE"
+NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN: "automl-migration-test.firebaseapp.com"
+NEXT_PUBLIC_FIREBASE_PROJECT_ID: "automl-migration-test"
+NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET: "automl-migration-test.firebasestorage.app"
+NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID: "6924728003"
+NEXT_PUBLIC_FIREBASE_APP_ID: "1:6924728003:web:898ca3f2cc635483549476"
+
+MOMENTUM_NEXT_PUBLIC_FIREBASE_API_KEY: "AIzaSyCIY1QJRMwozJvP3a0ieDdXv5JmSry1wxE"
+MOMENTUM_NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN: "automl-migration-test.firebaseapp.com"
+MOMENTUM_NEXT_PUBLIC_FIREBASE_PROJECT_ID: "automl-migration-test"
+MOMENTUM_NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET: "automl-migration-test.firebasestorage.app"
+MOMENTUM_NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID: "6924728003"
+MOMENTUM_NEXT_PUBLIC_FIREBASE_APP_ID: "1:6924728003:web:898ca3f2cc635483549476"
+MOMENTUM_GOOGLE_API_KEY: "AIzaSyAS4ScrMP3AIwcYarWsEYxRH1fIZJ9R8nU"
+MOMENTUM_FIRECRAWL_API_KEY: "fc-37f2d5517ccd4564bebea7a036d0e4fb"
+# MOMENTUM_GOOGLE_APPLICATION_CREDENTIALS_JSON: Set this via environment variable or Secret Manager
+# This should NOT be committed to the repository as it contains sensitive credentials

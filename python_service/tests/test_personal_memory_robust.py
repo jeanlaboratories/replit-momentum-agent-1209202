@@ -2,44 +2,33 @@ import pytest
 import os
 import sys
 import asyncio
+import types
 from unittest.mock import MagicMock, patch, AsyncMock
 
-# Skip this entire module due to complex import dependencies that require google.adk and google.cloud
-# to be properly installed. These tests are integration tests that need a full environment.
-pytest.skip(
-    "Skipping test_personal_memory_robust.py - requires full google.adk and google.cloud environment",
-    allow_module_level=True
-)
+# Note: This test requires google.adk and google.cloud to be properly installed.
+# We now have these dependencies installed, so the test can run.
+# The test uses mocks to avoid requiring actual Google Cloud credentials.
 
 # Add project root and python_service to path
 sys.path.append(os.path.join(os.path.dirname(__file__), '../..'))
 sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
 
-# Mock dependencies before importing modules that use them
-# We need to mock all google.adk submodules BEFORE any imports happen
-adk_mock = MagicMock()
-tools_mock = MagicMock()
-agent_tool_mock = MagicMock()
+# Don't mock google.* modules - let them import normally
+# The real modules are installed and will work with proper patching
+# Only mock firebase_admin to avoid requiring actual Firebase credentials
 
-# Set up the tools module hierarchy properly
-sys.modules['google'] = MagicMock()
-sys.modules['google.adk'] = adk_mock
-sys.modules['google.adk.agents'] = adk_mock.agents
-sys.modules['google.adk.memory'] = adk_mock.memory
-sys.modules['google.adk.sessions'] = adk_mock.sessions
-sys.modules['google.adk.events'] = adk_mock.events
-sys.modules['google.adk.models'] = adk_mock.models
-sys.modules['google.adk.runners'] = adk_mock.runners
-sys.modules['google.adk.tools'] = tools_mock
-sys.modules['google.adk.tools.agent_tool'] = agent_tool_mock
-sys.modules['google.adk.tools.mcp_tool'] = MagicMock()
+# Mock firebase_admin before imports - use MagicMock for attributes that will be patched
+firebase_admin_mock = MagicMock()
+firebase_admin_mock.credentials = MagicMock()
+firebase_admin_mock.storage = MagicMock()
+firebase_admin_mock.firestore = MagicMock()
+firebase_admin_mock.initialize_app = MagicMock()
+sys.modules['firebase_admin'] = firebase_admin_mock
+sys.modules['firebase_admin.credentials'] = firebase_admin_mock.credentials
+sys.modules['firebase_admin.storage'] = firebase_admin_mock.storage
+sys.modules['firebase_admin.firestore'] = firebase_admin_mock.firestore
 
-# Mock firebase_admin before imports
-sys.modules['firebase_admin'] = MagicMock()
-sys.modules['firebase_admin.credentials'] = MagicMock()
-sys.modules['firebase_admin.storage'] = MagicMock()
-sys.modules['firebase_admin.firestore'] = MagicMock()
-
+# Import modules with proper patching
 with patch('firebase_admin.credentials.Certificate'), \
      patch('firebase_admin.initialize_app'), \
      patch('firebase_admin.storage.bucket'), \
@@ -218,7 +207,11 @@ def test_create_engine_updates_firestore(mock_firestore, mock_agent_engine_manag
         mock_user_ref = MagicMock()
         mock_db.collection.return_value.document.return_value = mock_user_ref
         
-        mock_agent_engine_manager.create_agent_engine.return_value = "new-engine-id"
+        # create_agent_engine should return a dict with status, not just a string
+        mock_agent_engine_manager.create_agent_engine.return_value = {
+            "status": "success",
+            "agent_engine_id": "new-engine-id"
+        }
         
         request_mock = AsyncMock(spec=Request)
         request_mock.json.return_value = {"user_id": "test_user_3"}

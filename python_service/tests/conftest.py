@@ -29,13 +29,14 @@ def clean_module_imports(request):
     yield  # Run the test
     
     # Clean up any modules that were added during the test
+    # BUT: Don't delete google.* or firebase_* modules as they can cause segfaults
+    # when re-imported (especially proto/Firestore modules)
     modules_to_remove = []
     for module_name in sys.modules:
         if module_name not in original_modules:
-            # Only remove test-related modules, not system ones
-            if (module_name.startswith('google.') or 
-                module_name.startswith('firebase_') or 
-                module_name.startswith('tests.')):
+            # Only remove test-related modules, NOT Google/Firebase modules
+            # (they can cause segfaults when deleted and re-imported)
+            if module_name.startswith('tests.'):
                 modules_to_remove.append(module_name)
     
     for module_name in modules_to_remove:

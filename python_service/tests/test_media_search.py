@@ -32,13 +32,13 @@ class TestMediaSearchService(unittest.TestCase):
         """Clean up after tests."""
         self.env_patcher.stop()
 
-    @patch('services.media_search_service.google')
+    @patch('config.get_google_credentials')
     @patch('services.media_search_service.discoveryengine')
-    def test_service_initialization(self, mock_discoveryengine, mock_google):
+    def test_service_initialization(self, mock_discoveryengine, mock_get_credentials):
         """Test MediaSearchService initializes correctly."""
-        # Mock Google auth
+        # Mock Google credentials
         mock_credentials = MagicMock()
-        mock_google.auth.default.return_value = (mock_credentials, None)
+        mock_get_credentials.return_value = (mock_credentials, None)
         
         from services.media_search_service import MediaSearchService
 
@@ -108,13 +108,13 @@ class TestMediaSearchService(unittest.TestCase):
         self.assertFalse(result.success)
         self.assertIn('not configured', result.message)
 
-    @patch('services.media_search_service.google')
+    @patch('config.get_google_credentials')
     @patch('services.media_search_service.discoveryengine')
-    def test_index_media_empty_items(self, mock_discoveryengine, mock_google):
+    def test_index_media_empty_items(self, mock_discoveryengine, mock_get_credentials):
         """Test index with empty media items."""
-        # Mock Google auth
+        # Mock Google credentials
         mock_credentials = MagicMock()
-        mock_google.auth.default.return_value = (mock_credentials, None)
+        mock_get_credentials.return_value = (mock_credentials, None)
         
         from services.media_search_service import MediaSearchService
 
@@ -163,13 +163,13 @@ class TestMediaSearchService(unittest.TestCase):
         self.assertIsNotNone(content)
 
     @patch('services.media_search_service.google_exceptions')
-    @patch('services.media_search_service.google')
+    @patch('config.get_google_credentials')
     @patch('services.media_search_service.discoveryengine')
-    def test_delete_media_not_found(self, mock_discoveryengine, mock_google, mock_google_exceptions):
+    def test_delete_media_not_found(self, mock_discoveryengine, mock_get_credentials, mock_google_exceptions):
         """Test delete handles not found gracefully."""
-        # Mock Google auth
+        # Mock Google credentials
         mock_credentials = MagicMock()
-        mock_google.auth.default.return_value = (mock_credentials, None)
+        mock_get_credentials.return_value = (mock_credentials, None)
         
         # Mock Google exceptions
         not_found_exception = Exception('Not found')
@@ -854,13 +854,13 @@ class TestMediaSearchIntegration(unittest.TestCase):
         self.assertEqual(result['results'][0]['source'], 'upload')
 
     @patch('services.media_search_service.struct_pb2')
-    @patch('services.media_search_service.google')
+    @patch('config.get_google_credentials')
     @patch('services.media_search_service.discoveryengine')
-    def test_indexing_flow(self, mock_discoveryengine, mock_google, mock_struct_pb2):
+    def test_indexing_flow(self, mock_discoveryengine, mock_get_credentials, mock_struct_pb2):
         """Test media indexing flow."""
-        # Mock Google auth
+        # Mock Google credentials
         mock_credentials = MagicMock()
-        mock_google.auth.default.return_value = (mock_credentials, None)
+        mock_get_credentials.return_value = (mock_credentials, None)
         
         # Mock struct_pb2
         mock_struct = MagicMock()

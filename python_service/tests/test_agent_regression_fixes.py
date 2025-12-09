@@ -15,6 +15,7 @@ import json
 import sys
 import os
 import importlib
+import types
 
 # Add python_service to path - insert at beginning for priority
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
@@ -22,12 +23,25 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 
 def setup_module(module):
     """Clean up any polluted sys.modules from other test files before running our tests."""
-    # Mock google.auth.transport before any imports that might need it
-    if 'google.auth.transport' not in sys.modules:
-        mock_transport = MagicMock()
-        mock_transport._http_client = MagicMock()
-        sys.modules['google.auth.transport'] = mock_transport
-        sys.modules['google.auth.transport._http_client'] = MagicMock()
+    # Ensure google.auth.transport can be imported properly
+    # Don't mock it - let the real module be imported if it exists
+    # The issue is that conftest.py cleanup might have removed it
+    try:
+        # Try to import the real module first
+        import google.auth.transport.requests
+        import google.auth.transport._http_client
+    except ImportError:
+        # If it fails, create module-like objects
+        transport_module = types.ModuleType('google.auth.transport')
+        requests_module = types.ModuleType('google.auth.transport.requests')
+        http_client_module = types.ModuleType('google.auth.transport._http_client')
+        
+        transport_module.requests = requests_module
+        transport_module._http_client = http_client_module
+        
+        sys.modules['google.auth.transport'] = transport_module
+        sys.modules['google.auth.transport.requests'] = requests_module
+        sys.modules['google.auth.transport._http_client'] = http_client_module
     
     # Remove mocked google.adk modules that other test files inject at import time
     mocked_modules = [
