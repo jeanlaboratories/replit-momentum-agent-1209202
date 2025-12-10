@@ -22,6 +22,7 @@ import type {
   GeneratedDay,
   Video,
   EditedImage,
+  Music,
   BrandProfile,
   BrandAsset,
   BrandText,
@@ -397,6 +398,331 @@ export async function generateVideoAction(
     return {
       error: ['Failed to generate video.', errorMessage],
       jobId,
+    };
+  }
+}
+
+export async function generateMusicAction(
+  brandId: string,
+  prompt: string,
+  negative_prompt?: string,
+  sample_count?: number,
+  seed?: number,
+  model?: string,
+  jobId?: string
+): Promise<{ success: boolean; music?: Music[]; error?: string; jobId?: string }> {
+  let finalJobId: string | undefined;
+  
+  try {
+    const authenticatedUser = await getAuthenticatedUser();
+    await requireBrandAccess(authenticatedUser.uid, brandId);
+
+    // Always create job in Firestore job queue for persistent tracking
+    // The UI job queue will sync with this via useGenerationTracking hook
+    // Filter out undefined values from metadata (Firestore doesn't allow undefined)
+    const metadata: Record<string, any> = {
+      sample_count: sample_count || 1,
+      model: model || 'lyria-002',
+    };
+    if (seed !== undefined) {
+      metadata.seed = seed;
+    }
+    
+    finalJobId = await generationJobQueue.createJob(
+      brandId,
+      authenticatedUser.uid,
+      'music',
+      prompt.substring(0, 50),
+      prompt,
+      metadata
+    );
+
+    // Call Python backend directly (same as other generation flows)
+    const pythonBackendUrl = process.env.MOMENTUM_PYTHON_AGENT_URL || 'http://127.0.0.1:8000';
+    const musicApiUrl = `${pythonBackendUrl}/agent/music/generate`;
+    
+    // Get project ID from environment
+    const projectId = process.env.MOMENTUM_NEXT_PUBLIC_FIREBASE_PROJECT_ID;
+    
+    if (!projectId) {
+      const error = 'Project ID not configured';
+      if (finalJobId) {
+        await generationJobQueue.failJob(finalJobId, error);
+      }
+      return {
+        success: false,
+        error,
+        jobId: finalJobId,
+      };
+    }
+    
+    // Set initial progress
+    if (finalJobId) {
+      console.log('[MusicGeneration] Setting initial progress to 10%');
+      await generationJobQueue.updateProgress(finalJobId, 10); // Starting generation
+    }
+    
+    // Add timeout to prevent hanging requests (5 minutes for music generation)
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 5 * 60 * 1000); // 5 minutes
+    
+    let response: Response;
+    try {
+      // Update progress before making the request
+      if (finalJobId) {
+        console.log('[MusicGeneration] Setting progress to 25% - Sending request to Lyria API');
+        await generationJobQueue.updateProgress(finalJobId, 25); // Sending request to Lyria API
+      }
+      
+      response = await fetch(musicApiUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          prompt: prompt.trim(),
+          negative_prompt: negative_prompt?.trim() || '',
+          sample_count: sample_count || 1,
+          seed,
+          project_id: projectId,
+          brand_id: brandId,
+          user_id: authenticatedUser.uid,
+          model: model || 'lyria-002',
+        }),
+        signal: controller.signal,
+      });
+    } catch (fetchError: any) {
+      clearTimeout(timeoutId);
+      // Handle timeout or network errors
+      if (fetchError.name === 'AbortError') {
+        const timeoutError = 'Request timed out after 5 minutes';
+        if (finalJobId) {
+          await generationJobQueue.failJob(finalJobId, timeoutError);
+        }
+        return {
+          success: false,
+          error: timeoutError,
+          jobId: finalJobId,
+        };
+      }
+      // Re-throw other errors to be caught by outer catch
+      throw fetchError;
+    } finally {
+      clearTimeout(timeoutId);
+    }
+
+    // Update progress after receiving response
+    if (finalJobId) {
+      console.log('[MusicGeneration] Setting progress to 60% - Received response, processing audio');
+      await generationJobQueue.updateProgress(finalJobId, 60); // Received response, processing audio
+      // Small delay to allow Firestore to sync
+      await new Promise(resolve => setTimeout(resolve, 200));
+    }
+
+    if (!response.ok) {
+      let errorMessage = 'Failed to generate music';
+      try {
+        const errorData = await response.json();
+        errorMessage = errorData.error || errorData.detail || errorMessage;
+      } catch (jsonError) {
+        // If JSON parsing fails, use status text
+        errorMessage = response.statusText || errorMessage;
+      }
+      
+      // Mark job as failed
+      if (finalJobId) {
+        await generationJobQueue.failJob(finalJobId, errorMessage);
+      }
+      return {
+        success: false,
+        error: errorMessage,
+        jobId: finalJobId,
+      };
+    }
+
+    let data: any;
+    try {
+      data = await response.json();
+      
+      // Update progress after parsing response
+      if (finalJobId) {
+        console.log('[MusicGeneration] Setting progress to 80% - Processing completed, finalizing');
+        await generationJobQueue.updateProgress(finalJobId, 80); // Processing completed, finalizing
+        // Small delay to allow Firestore to sync
+        await new Promise(resolve => setTimeout(resolve, 200));
+      }
+    } catch (jsonError) {
+      // If response is not valid JSON, mark as failed
+      const errorMessage = 'Invalid response from music generation service';
+      if (finalJobId) {
+        await generationJobQueue.failJob(finalJobId, errorMessage);
+      }
+      return {
+        success: false,
+        error: errorMessage,
+        jobId: finalJobId,
+      };
+    }
+    
+    // Mark job as completed if we have music
+    if (finalJobId) {
+      if (data.music && data.music.length > 0) {
+        // Final progress update before completion
+        console.log('[MusicGeneration] Setting progress to 95% - Almost done');
+        await generationJobQueue.updateProgress(finalJobId, 95); // Almost done
+        // Small delay to allow Firestore to sync
+        await new Promise(resolve => setTimeout(resolve, 200));
+        
+        const firstMusic = data.music[0];
+        console.log('[MusicGeneration] Completing job with music ID:', firstMusic.id);
+        await generationJobQueue.completeJob(finalJobId, firstMusic.id, firstMusic.url);
+      } else {
+        // No music returned - mark as failed
+        await generationJobQueue.failJob(finalJobId, 'No music was generated');
+      }
+    }
+    
+    // Convert Firestore timestamps to serializable dates
+    const serializedMusic = (data.music || []).map((track: any) => ({
+      ...track,
+      createdAt: track.createdAt?._seconds 
+        ? new Date(track.createdAt._seconds * 1000) 
+        : track.createdAt
+    }));
+
+    console.log('[MusicGeneration] Action completed successfully with', serializedMusic.length, 'tracks');
+    return {
+      success: true,
+      music: serializedMusic,
+      jobId: finalJobId,
+    };
+  } catch (error: any) {
+    // Ensure job is marked as failed if we have a jobId
+    if (finalJobId) {
+      try {
+        await generationJobQueue.failJob(finalJobId, error.message || 'An unexpected error occurred');
+      } catch (failError) {
+        console.error('Failed to mark job as failed:', failError);
+      }
+    }
+    return {
+      success: false,
+      error: error.message || 'An unexpected error occurred',
+      jobId: finalJobId,
+    };
+  }
+}
+
+export async function getMusicAction(
+  brandId: string,
+  filters?: { userId?: string; dateRange?: { start: string; end: string } }
+): Promise<Music[]> {
+  try {
+    const authenticatedUser = await getAuthenticatedUser();
+    await requireBrandAccess(authenticatedUser.uid, brandId);
+
+    const { adminDb } = getAdminInstances();
+    let query = adminDb.collection('brands').doc(brandId).collection('music');
+
+    const snapshot = await query.orderBy('createdAt', 'desc').get();
+
+    let music = snapshot.docs.map((doc: any) => {
+      const data = doc.data();
+      return {
+        id: doc.id,
+        brandId,
+        url: data.url,
+        prompt: data.prompt,
+        negative_prompt: data.negative_prompt,
+        sample_index: data.sample_index,
+        sample_count: data.sample_count,
+        seed: data.seed,
+        duration: data.duration || 30,
+        sampleRate: data.sampleRate || 48000,
+        format: data.format || 'wav',
+        createdAt: data.createdAt?._seconds 
+          ? new Date(data.createdAt._seconds * 1000) 
+          : data.createdAt,
+        createdBy: data.createdBy,
+        filename: data.filename,
+      } as Music;
+    });
+
+    // Apply filters if provided
+    if (filters?.userId) {
+      music = music.filter((m) => m.createdBy === filters.userId);
+    }
+
+    if (filters?.dateRange) {
+      const startDate = new Date(filters.dateRange.start);
+      const endDate = new Date(filters.dateRange.end);
+      music = music.filter((m) => {
+        if (!m.createdAt) return false;
+        const createdAt = m.createdAt instanceof Date
+          ? m.createdAt
+          : typeof m.createdAt === 'string'
+          ? new Date(m.createdAt)
+          : (m.createdAt as any)?.toDate?.() || new Date(0);
+        return createdAt >= startDate && createdAt <= endDate;
+      });
+    }
+
+    return music;
+  } catch (error: any) {
+    console.error('Error fetching music:', error);
+    return [];
+  }
+}
+
+export async function deleteMusicAction(
+  brandId: string,
+  musicId: string
+): Promise<{ success: boolean; error?: string }> {
+  try {
+    const authenticatedUser = await getAuthenticatedUser();
+    await requireBrandAccess(authenticatedUser.uid, brandId);
+
+    const { adminDb, adminStorage } = getAdminInstances();
+
+    // Get the music document
+    const musicDoc = await adminDb
+      .collection('brands')
+      .doc(brandId)
+      .collection('music')
+      .doc(musicId)
+      .get();
+
+    if (!musicDoc.exists) {
+      return { success: false, error: 'Music not found' };
+    }
+
+    const musicData = musicDoc.data();
+    
+    // Delete from Firestore
+    await adminDb
+      .collection('brands')
+      .doc(brandId)
+      .collection('music')
+      .doc(musicId)
+      .delete();
+
+    // Delete from Storage if filename exists
+    if (musicData?.filename) {
+      try {
+        const bucket = adminStorage.bucket();
+        const file = bucket.file(musicData.filename);
+        await file.delete().catch(() => {
+          // Ignore errors if file doesn't exist
+        });
+      } catch (storageError) {
+        console.error('Error deleting music file from storage:', storageError);
+        // Continue even if storage deletion fails
+      }
+    }
+
+    return { success: true };
+  } catch (error: any) {
+    return {
+      success: false,
+      error: error.message || 'Failed to delete music',
     };
   }
 }
@@ -3643,6 +3969,83 @@ export async function saveChatbotVideoAction(
     return {video: videoData};
   } catch (e: any) {
     console.error('Error in saveChatbotVideoAction:', e);
+    return { error: e.message };
+  }
+}
+
+/**
+ * Save a chatbot-generated music track to both music gallery and media library
+ */
+export async function saveChatbotMusicAction(
+  brandId: string,
+  musicId: string,
+  prompt: string,
+  musicDataUri: string
+): Promise<{music?: Music; error?: string}> {
+  console.log('saveChatbotMusicAction called with:', { brandId, musicId, promptLength: prompt?.length, musicDataUriLength: musicDataUri?.length });
+  try {
+    // SECURITY: Verify user has access to this brand
+    const user = await getAuthenticatedUser();
+    await requireBrandAccess(user.uid, brandId);
+
+    const {adminDb} = getAdminInstances();
+
+    // Upload the generated music to Firebase Storage if it's a data URI
+    // If it's already a URL (e.g. from Agent), use it directly
+    let musicUrl = musicDataUri;
+    if (musicDataUri.startsWith('data:')) {
+      musicUrl = await uploadToStorage(
+        musicId,
+        'music',
+        'generated',
+        musicDataUri,
+        'generated_music.wav'
+      );
+    }
+
+    // Save to Firestore music collection
+    const musicData: any = {
+      id: musicId,
+      brandId: brandId,
+      musicUrl: musicUrl,
+      title: prompt.substring(0, 50) + (prompt.length > 50 ? '...' : ''),
+      description: prompt,
+      generatedBy: user.uid, // Track who generated the music
+      generatedAt: new Date().toISOString(), // Track when it was generated
+    };
+
+    await adminDb
+      .collection('music')
+      .doc(musicId)
+      .set(musicData, {merge: true});
+
+    // UNIFIED MEDIA: Also add to unified media library for immediate visibility
+    const mediaId = adminDb.collection('unifiedMedia').doc().id;
+    const unifiedMediaData: any = {
+      id: mediaId,
+      brandId: brandId,
+      type: 'music',
+      url: musicUrl,
+      thumbnailUrl: null, // Music doesn't have thumbnails
+      title: prompt.substring(0, 50) + (prompt.length > 50 ? '...' : ''),
+      description: prompt,
+      tags: ['ai-generated', 'chatbot', 'lyria-2'],
+      collections: [],
+      source: 'chatbot',
+      sourceMusicId: musicId,
+      createdAt: musicData.generatedAt,
+      createdBy: user.uid,
+      generatedBy: user.uid,
+      prompt: prompt,
+      isPublished: false,
+    };
+
+    await adminDb.collection('unifiedMedia').doc(mediaId).set(unifiedMediaData);
+    revalidatePath('/music');
+    revalidatePath('/media');
+    return {music: musicData};
+  } catch (e: any) {
+    console.error('Error in saveChatbotMusicAction:', e);
     return { error: e.message };
   }
 }

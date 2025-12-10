@@ -12,7 +12,7 @@
 
 import { getAdminInstances } from '@/lib/firebase/admin';
 
-export type GenerationJobType = 'image' | 'video' | 'bulk-text' | 'bulk-image' | 'synthesis' | 'media-reindex';
+export type GenerationJobType = 'image' | 'video' | 'music' | 'bulk-text' | 'bulk-image' | 'synthesis' | 'media-reindex';
 
 export type GenerationJobStatus = 'pending' | 'processing' | 'completed' | 'failed';
 
@@ -92,6 +92,17 @@ export class GenerationJobQueue {
     await adminDb.collection(this.collectionName).doc(jobId).update({
       progress,
     });
+    console.log(`[GenerationQueue] Updated progress for job ${jobId}: ${progress}%`);
+    
+    // Verify the update took effect by reading it back
+    const docRef = adminDb.collection(this.collectionName).doc(jobId);
+    const doc = await docRef.get();
+    const actualProgress = doc.data()?.progress;
+    if (actualProgress !== progress) {
+      console.warn(`[GenerationQueue] Progress verification failed for ${jobId}: expected ${progress}%, got ${actualProgress}%`);
+    } else {
+      console.log(`[GenerationQueue] Progress verification succeeded for ${jobId}: ${actualProgress}%`);
+    }
   }
 
   /**
@@ -173,7 +184,11 @@ export class GenerationJobQueue {
 
     // Sort by createdAt in memory (handle both string and Timestamp)
     const jobs = snapshot.docs
-      .map((doc: any) => doc.data() as GenerationJob)
+      .map((doc: any) => {
+        const jobData = doc.data() as GenerationJob;
+        console.log(`[GenerationQueue] Read active job from Firestore: ${doc.id} - progress: ${jobData.progress}%, status: ${jobData.status}`);
+        return jobData;
+      })
       .sort((a: any, b: any) => {
         const timeA = typeof a.createdAt === 'string' 
           ? new Date(a.createdAt).getTime() 

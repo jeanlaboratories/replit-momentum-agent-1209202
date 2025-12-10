@@ -19,41 +19,43 @@ vi.mock('next/navigation', () => ({
 }));
 
 // Mock Firebase Admin
+const createMockFirestoreDoc = () => ({
+  get: vi.fn(async () => ({
+    exists: false,
+    data: () => ({}),
+    id: 'mock-id',
+  })),
+  set: vi.fn(async () => ({})),
+  update: vi.fn(async () => ({})),
+  delete: vi.fn(async () => ({})),
+});
+
+const createMockFirestoreCollection = () => ({
+  doc: vi.fn(() => createMockFirestoreDoc()),
+  get: vi.fn(async () => ({
+    docs: [],
+    empty: true,
+    size: 0,
+    forEach: vi.fn(),
+  })),
+  add: vi.fn(async () => ({ id: 'new-id' })),
+  where: vi.fn(() => createMockFirestoreCollection()),
+  orderBy: vi.fn(() => createMockFirestoreCollection()),
+  limit: vi.fn(() => createMockFirestoreCollection()),
+  startAfter: vi.fn(() => createMockFirestoreCollection()),
+  offset: vi.fn(() => createMockFirestoreCollection()),
+});
+
 vi.mock('@/lib/firebase/admin', () => ({
   getAdminInstances: () => ({
     adminDb: {
-      collection: vi.fn(() => ({
-        doc: vi.fn(() => ({
-          collection: vi.fn(() => ({
-            doc: vi.fn(() => ({
-              get: vi.fn(),
-              add: vi.fn(),
-              update: vi.fn(),
-              delete: vi.fn(),
-              orderBy: vi.fn(() => ({
-                limit: vi.fn(() => ({
-                  get: vi.fn(),
-                })),
-                startAfter: vi.fn(() => ({
-                  get: vi.fn(),
-                })),
-              })),
-            })),
-            get: vi.fn(),
-            orderBy: vi.fn(() => ({
-              limit: vi.fn(() => ({
-                get: vi.fn(),
-              })),
-              startAfter: vi.fn(() => ({
-                get: vi.fn(),
-              })),
-            })),
-          })),
-        })),
-      })),
+      collection: vi.fn(() => createMockFirestoreCollection()),
       batch: vi.fn(() => ({
         delete: vi.fn(),
-        commit: vi.fn(),
+        set: vi.fn(),
+        update: vi.fn(),
+        create: vi.fn(),
+        commit: vi.fn(async () => ({})),
       })),
     },
   }),
@@ -67,5 +69,28 @@ vi.mock('@/lib/secure-auth', () => ({
 // Mock brand-membership
 vi.mock('@/lib/brand-membership', () => ({
   requireBrandAccess: vi.fn(),
+  requireBrandRole: vi.fn(),
+  getBrandMember: vi.fn(),
+  getBrandMembers: vi.fn(),
+}));
+
+// Mock AI Assistant Context
+vi.mock('@/lib/ai-assistant-context', () => ({
+  getAIAssistantContext: vi.fn(async () => ({
+    systemPrompt: 'Test system prompt',
+    brandSoulContext: null,
+    brandProfileContext: null,
+  })),
+}));
+
+// Mock Brand Soul Context
+vi.mock('@/lib/brand-soul/context', () => ({
+  getBrandSoulContext: vi.fn(async () => null),
+}));
+
+// Mock fetch for external APIs
+global.fetch = vi.fn(async () => new Response(JSON.stringify({ success: true }), { 
+  status: 200,
+  headers: { 'Content-Type': 'application/json' }
 }));
 

@@ -1,7 +1,7 @@
 import logging
 import requests
 import os
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 from marketing_agent import MarketingAgent
 from utils.context_utils import get_brand_context, get_settings_context
 from utils.model_defaults import DEFAULT_TEXT_MODEL
@@ -827,6 +827,185 @@ def _format_duration(seconds: int) -> str:
             return f"{hours}h {minutes}m"
         else:
             return f"{hours}h {minutes}m {secs}s"
+
+
+def generate_music(
+    prompt: str,
+    brand_id: str = "",
+    negative_prompt: str = "",
+    sample_count: int = 1,
+    seed: Optional[int] = None,
+    model: str = "lyria-002"
+) -> Dict[str, Any]:
+    """
+    Generate music using Google's Lyria 2 model via Vertex AI.
+    
+    This is a Team Tool for creating music tracks that are automatically saved
+    to both the Music Gallery and Media Library. Generated music is saved to
+    Firebase Storage and indexed for search alongside other media assets.
+    
+    USE THIS TOOL when team members need to:
+    - Create background music for videos or campaigns
+    - Generate theme music or jingles for projects
+    - Compose music for presentations or events
+    - Create ambient music for brand experiences
+    - Generate music samples for creative projects
+    
+    Examples:
+    - "Generate upbeat electronic music for our product launch"
+    - "Create calm ambient music for a wellness campaign"
+    - "Make a catchy jingle for our brand"
+    - "Generate rock music for an energetic video"
+    - "Create classical music for a professional presentation"
+    
+    Args:
+        prompt (str): Detailed text description of the music to generate.
+                     Examples: "energetic rock anthem with electric guitars",
+                              "peaceful piano melody with strings",
+                              "upbeat electronic dance music".
+        brand_id (str): Brand/Team ID. If empty, uses current context.
+        negative_prompt (str): Optional description of what to avoid in the music.
+        sample_count (int): Number of music samples to generate (1-4, default: 1).
+        seed (int): Optional seed for reproducible results. Cannot be used with sample_count > 1.
+        model (str): Music model to use (default: "lyria-002").
+    
+    Returns:
+        dict: Contains 'status', 'music' array with generated tracks, 'count', and metadata.
+              Each track includes: id, url, prompt, duration, format, and other metadata.
+              Also includes 'content' field with music URL markers for chat display.
+    """
+    try:
+        from utils.context_utils import get_user_context
+        import requests
+        
+        # Get brand ID and user ID from context
+        effective_brand_id = brand_id or get_brand_context()
+        user_id = get_user_context()
+        
+        if not effective_brand_id:
+            return {
+                "status": "error",
+                "error": "Brand ID required for music generation. Please ensure user is authenticated.",
+                "music": [],
+                "count": 0
+            }
+        
+        if not user_id:
+            return {
+                "status": "error", 
+                "error": "User ID required for music generation. Please ensure user is authenticated.",
+                "music": [],
+                "count": 0
+            }
+        
+        # Validate parameters
+        if sample_count < 1 or sample_count > 4:
+            return {
+                "status": "error",
+                "error": "sample_count must be between 1 and 4",
+                "music": [],
+                "count": 0
+            }
+        
+        if seed is not None and sample_count > 1:
+            return {
+                "status": "error",
+                "error": "seed and sample_count cannot be used together. When using seed, sample_count is ignored.",
+                "music": [],
+                "count": 0
+            }
+        
+        # Call the music generation router function directly to avoid HTTP timeout issues
+        logger.info(f"Generating music with prompt: '{prompt[:100]}...'")
+        
+        # Call the backend music generation API directly
+        music_api_url = "http://127.0.0.1:8000/agent/music/generate"
+        payload = {
+            "prompt": prompt,
+            "negative_prompt": negative_prompt,
+            "sample_count": sample_count,
+            "seed": seed,
+            "brand_id": effective_brand_id,
+            "user_id": user_id,
+            "model": model
+        }
+        import requests
+        response = requests.post(music_api_url, json=payload, timeout=45)  # 45 second timeout
+        
+        if response.status_code == 200:
+            result = response.json()
+            
+            if result.get("success"):
+                music_tracks = result.get("music", [])
+                
+                # Build success message with track details
+                if music_tracks:
+                    summary_text = f"Generated {len(music_tracks)} music track(s) with Lyria 2:\n\n"
+                    music_urls = []
+                    
+                    for i, track in enumerate(music_tracks, 1):
+                        track_title = f"Track {i}: {prompt[:50]}..."
+                        summary_text += f"**{track_title}**\n"
+                        summary_text += f"Duration: {track.get('duration', 30)} seconds\n"
+                        summary_text += f"Format: {track.get('format', 'wav').upper()}\n"
+                        summary_text += f"URL: {track['url']}\n\n"
+                        music_urls.append(track['url'])
+                    
+                    # Add music URL markers for frontend to extract and display
+                    media_markers = ""
+                    for url in music_urls:
+                        media_markers += f"\n__MUSIC_URL__{url}__MUSIC_URL__"
+                    
+                    return {
+                        "status": "success",
+                        "music": music_tracks,
+                        "count": len(music_tracks),
+                        "prompt": prompt,
+                        "model": model,
+                        "content": summary_text + media_markers,  # Primary text field with music markers
+                        "message": summary_text  # Backward compatibility (text only)
+                    }
+                else:
+                    return {
+                        "status": "error",
+                        "error": "No music tracks were generated",
+                        "music": [],
+                        "count": 0
+                    }
+            else:
+                error_message = result.get("detail", "Music generation failed")
+                return {
+                    "status": "error",
+                    "error": error_message,
+                    "music": [],
+                    "count": 0
+                }
+        else:
+            return {
+                "status": "error",
+                "error": f"HTTP {response.status_code}: Music generation failed",
+                "music": [],
+                "count": 0
+            }
+            
+    except Exception as timeout_exc:
+        # Handle any timeout or network exceptions
+        if "timeout" in str(timeout_exc).lower() or "timed out" in str(timeout_exc).lower():
+            logger.error("Music generation request timed out")
+            return {
+                "status": "error", 
+                "error": "Music generation timed out. Please try again with a shorter or simpler prompt.",
+                "music": [],
+                "count": 0
+            }
+        else:
+            logger.error(f"Error calling music generation: {timeout_exc}")
+            return {
+                "status": "error",
+                "error": f"Network error: {str(timeout_exc)}",
+                "music": [],
+                "count": 0
+            }
 
 
 def save_youtube_video_to_library(

@@ -20,7 +20,7 @@ import firebase_admin
 from firebase_admin import credentials
 
 # Import routers (after .env is loaded)
-from routers import marketing, agent, session, media, memory, rag, search_settings
+from routers import marketing, agent, session, media, memory, rag, search_settings, music
 from services.adk_service import init_adk
 
 # Initialize FastAPI app
@@ -84,6 +84,7 @@ app.include_router(media.router)
 app.include_router(memory.router)
 app.include_router(rag.router)
 app.include_router(search_settings.router)
+app.include_router(music.router)
 
 @app.get("/")
 async def root():

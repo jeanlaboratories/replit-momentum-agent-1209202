@@ -1,6 +1,6 @@
 'use client';
 
-import { Zap, User, LogOut, Video, Image as ImageIcon, FileText, Settings, Users, Brain, Folder, Calendar } from 'lucide-react';
+import { Zap, User, LogOut, Video, Image as ImageIcon, Music2, FileText, Settings, Users, Brain, Folder, Calendar } from 'lucide-react';
 import Link from 'next/link';
 import { Button } from '@/components/ui/button';
 import { useAuth } from '@/hooks/use-auth';
@@ -72,7 +72,7 @@ export function Header() {
                 ))}
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
-                  <Button variant="link" className={cn("text-muted-foreground hover:text-primary transition-colors", { 'text-primary': pathname.startsWith('/images') || pathname.startsWith('/videos') })}>
+                  <Button variant="link" className={cn("text-muted-foreground hover:text-primary transition-colors", { 'text-primary': pathname.startsWith('/images') || pathname.startsWith('/videos') || pathname.startsWith('/music') })}>
                     <Zap className="mr-2 h-4 w-4" />
                     Apps
                   </Button>
@@ -85,6 +85,10 @@ export function Header() {
                   <DropdownMenuItem onClick={() => router.push('/videos')} className="cursor-pointer">
                     <Video className="mr-2 h-4 w-4" />
                     <span>Video Gallery</span>
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => router.push('/music')} className="cursor-pointer">
+                    <Music2 className="mr-2 h-4 w-4" />
+                    <span>Music Gallery</span>
                   </DropdownMenuItem>
                 </DropdownMenuContent>
               </DropdownMenu>

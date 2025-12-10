@@ -12,6 +12,8 @@ import { requireBrandAccess } from '@/lib/brand-membership';
 
 export async function GET(request: NextRequest) {
   try {
+    console.log('[GenerationJobsAPI] Incoming request:', request.nextUrl.searchParams.toString());
+    
     // Verify user is authenticated
     const user = await getAuthenticatedUser();
 
@@ -32,11 +34,44 @@ export async function GET(request: NextRequest) {
     await requireBrandAccess(user.uid, brandId);
 
     // Get active jobs (pending/processing)
-    const activeJobs = await generationJobQueue.getActiveJobsForUser(
+    let activeJobs = await generationJobQueue.getActiveJobsForUser(
       brandId,
       user.uid,
       20
     );
+
+    // Auto-fail jobs that have been processing for too long (2 minutes for music)
+    const now = Date.now();
+    const maxProcessingTime = 2 * 60 * 1000; // 2 minutes (music usually takes ~30 seconds)
+    const jobsToFail: string[] = [];
+    
+    for (const job of activeJobs) {
+      const startedAt = typeof job.startedAt === 'string' 
+        ? new Date(job.startedAt).getTime()
+        : job.startedAt?.toMillis?.() || new Date(job.createdAt).getTime();
+      
+      const processingTime = now - startedAt;
+      
+      if (processingTime > maxProcessingTime) {
+        jobsToFail.push(job.id);
+        const timeoutMinutes = Math.round(processingTime / 60000);
+        console.log(`[GenerationJobsAPI] Auto-failing stale job ${job.id} after ${timeoutMinutes} minutes`);
+        // Mark as failed
+        await generationJobQueue.failJob(
+          job.id,
+          `Job timed out after ${timeoutMinutes} minutes`
+        );
+      }
+    }
+    
+    // Re-fetch active jobs after auto-failing stale ones
+    if (jobsToFail.length > 0) {
+      activeJobs = await generationJobQueue.getActiveJobsForUser(
+        brandId,
+        user.uid,
+        20
+      );
+    }
 
     // Get recently completed jobs (within last 5 minutes for fresh notifications)
     const recentJobs = await generationJobQueue.getRecentJobsForUser(
@@ -45,6 +80,16 @@ export async function GET(request: NextRequest) {
       10,
       5 // Only last 5 minutes
     );
+
+    console.log(`[GenerationJobsAPI] Returning jobs for ${brandId}:`, {
+      activeJobs: activeJobs.map(j => ({ id: j.id, status: j.status, progress: j.progress, type: j.type })),
+      recentJobs: recentJobs.map(j => ({ id: j.id, status: j.status, progress: j.progress, type: j.type }))
+    });
+
+    // Add debugging for job sync issue
+    if (recentJobs.length > 0) {
+      console.log(`[GenerationJobsAPI] DEBUG: Recent job details for frontend sync:`, recentJobs[0]);
+    }
 
     return NextResponse.json({
       success: true,

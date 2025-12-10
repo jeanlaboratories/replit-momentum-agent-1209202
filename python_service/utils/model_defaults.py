@@ -7,6 +7,7 @@ DEFAULT_AGENT_MODEL = 'gemini-2.0-flash'
 DEFAULT_IMAGE_MODEL = 'imagen-4.0-generate-001'
 DEFAULT_IMAGE_EDIT_MODEL = 'gemini-3-pro-image-preview'
 DEFAULT_VIDEO_MODEL = 'veo-3.1-generate-preview'
+DEFAULT_MUSIC_MODEL = 'lyria-002'
 DEFAULT_YOUTUBE_ANALYSIS_MODEL = 'gemini-2.5-flash'
 DEFAULT_SEARCH_MODEL = 'gemini-2.0-flash'
 
@@ -25,6 +26,7 @@ DEFAULT_SETTINGS = {
     'imageModel': DEFAULT_IMAGE_MODEL,
     'imageEditModel': DEFAULT_IMAGE_EDIT_MODEL,
     'videoModel': DEFAULT_VIDEO_MODEL,
+    'musicModel': DEFAULT_MUSIC_MODEL,
 }
 
 # Available model choices for reference
@@ -54,4 +56,8 @@ AVAILABLE_VIDEO_MODELS = [
     'veo-3.1-fast-generate-preview',
     'veo-3.0-fast-generate-001',
     'veo-2.0-generate-001',
+]
+
+AVAILABLE_MUSIC_MODELS = [
+    'lyria-002',
 ]

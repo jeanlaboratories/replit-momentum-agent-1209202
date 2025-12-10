@@ -102,6 +102,26 @@ export interface Video {
 }
 
 /**
+ * Represents a generated music track in the application.
+ */
+export interface Music {
+  id: string;
+  brandId: string;
+  url: string;
+  prompt: string;
+  negative_prompt?: string;
+  sample_index?: number;
+  sample_count?: number;
+  seed?: number;
+  duration: number; // Duration in seconds (Lyria 2 generates 30-second clips)
+  sampleRate: number; // Sample rate in Hz (Lyria 2 uses 48kHz)
+  format: string; // Audio format (e.g., "wav")
+  createdAt?: string | Date | { toDate: () => Date };
+  createdBy?: string; // user uid who generated the music
+  filename?: string;
+}
+
+/**
  * Represents an edited image in the application.
  */
 export interface EditedImage {

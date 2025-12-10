@@ -16,7 +16,7 @@ import { PageTransition } from '@/components/ui/page-transition';
 import {useAuth} from '@/hooks/use-auth';
 import { useBrandData } from '@/hooks/use-brand-data';
 import {useRouter, useSearchParams} from 'next/navigation';
-import {Loader2, FileText, Plus, ImageIcon, Video as VideoIcon, Sparkles} from 'lucide-react';
+import {Loader2, FileText, Plus, ImageIcon, Video as VideoIcon, Music2, Sparkles} from 'lucide-react';
 import { getBrandProfileAction, generateBrandSummaryAction } from './actions';
 import { Button } from '@/components/ui/button';
 import Link from 'next/link';
@@ -151,6 +151,10 @@ function BrandContextSidebar({
               <Link href="/videos" className="flex flex-col items-center justify-center gap-1 rounded-lg border-2 border-dashed border-primary/30 bg-primary/5 hover:bg-primary/10 hover:border-primary/50 transition-colors aspect_video">
                 <VideoIcon className="h-6 w-6 text-primary" />
                 <span className="text-xs text-primary font-medium">Video Gallery</span>
+                    </Link>
+              <Link href="/music" className="flex flex-col items-center justify-center gap-1 rounded-lg border-2 border-dashed border-primary/30 bg-primary/5 hover:bg-primary/10 hover:border-primary/50 transition-colors aspect-video">
+                <Music2 className="h-6 w-6 text-primary" />
+                <span className="text-xs text-primary font-medium">Music Gallery</span>
                     </Link>
                 </div>
             </SidebarGroup>

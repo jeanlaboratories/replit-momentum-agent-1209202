@@ -37,7 +37,8 @@ interface GenerationJob {
 }
 
 const STORAGE_KEY = 'momentum_generation_tracked_jobs';
-const POLL_INTERVAL = 5000; // 5 seconds
+const COMPLETED_JOBS_KEY = 'momentum_completed_generation_jobs';
+const POLL_INTERVAL = 2000; // 2 seconds for more responsive progress tracking
 
 /**
  * Get tracked job IDs from localStorage
@@ -94,6 +95,43 @@ function untrackJob(jobId: string) {
 }
 
 /**
+ * Get completed job IDs from localStorage
+ */
+function getCompletedJobIds(): Set<string> {
+  if (typeof window === 'undefined') return new Set();
+  try {
+    const stored = localStorage.getItem(COMPLETED_JOBS_KEY);
+    if (stored) {
+      const data = JSON.parse(stored);
+      // Clean up old entries (older than 24 hours)
+      const cutoff = Date.now() - 24 * 60 * 60 * 1000;
+      const valid = Object.entries(data).filter(
+        ([, timestamp]) => (timestamp as number) > cutoff
+      );
+      return new Set(valid.map(([id]) => id));
+    }
+  } catch (e) {
+    console.error('Error reading completed jobs from localStorage:', e);
+  }
+  return new Set();
+}
+
+/**
+ * Mark a job as completed in localStorage
+ */
+function markJobCompleted(jobId: string) {
+  if (typeof window === 'undefined') return;
+  try {
+    const stored = localStorage.getItem(COMPLETED_JOBS_KEY);
+    const data = stored ? JSON.parse(stored) : {};
+    data[jobId] = Date.now();
+    localStorage.setItem(COMPLETED_JOBS_KEY, JSON.stringify(data));
+  } catch (e) {
+    console.error('Error marking job as completed in localStorage:', e);
+  }
+}
+
+/**
  * Get human-readable job type label
  */
 function getJobTypeLabel(type: string): string {
@@ -102,6 +140,8 @@ function getJobTypeLabel(type: string): string {
       return 'Image';
     case 'video':
       return 'Video';
+    case 'music':
+      return 'Music';
     case 'bulk-text':
       return 'Text Content';
     case 'bulk-image':
@@ -120,7 +160,7 @@ function getJobTypeLabel(type: string): string {
  */
 export function useGenerationTracking() {
   const { brandId, user } = useAuth();
-  const { addJob, updateJob, removeJob } = useJobQueue();
+  const { addJob, updateJob, removeJob, state: queueState } = useJobQueue();
   const activeNotifications = useRef<Map<string, NotificationAPI>>(new Map());
   const pollIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const notifiedCompletedJobs = useRef<Set<string>>(new Set());
@@ -140,6 +180,9 @@ export function useGenerationTracking() {
         break;
       case 'video':
         jobType = 'video-generation';
+        break;
+      case 'music':
+        jobType = 'music-generation';
         break;
       case 'media-reindex':
         jobType = 'media-reindex';
@@ -195,22 +238,58 @@ export function useGenerationTracking() {
    * Sync generation jobs to job queue panel
    */
   const syncJobsToQueue = useCallback((jobs: GenerationJob[]) => {
+    const completedJobIds = getCompletedJobIds();
+    
     jobs.forEach((genJob) => {
       const queueJob = convertToQueueJob(genJob);
       
-      if (!syncedJobs.current.has(genJob.id)) {
-        // Add new job to queue
-        addJob(queueJob);
+      // Check if job already exists in the queue (prevents duplicates on refresh)
+      const existsInQueue = queueState.jobs.some(job => job.id === genJob.id);
+      
+      if (existsInQueue) {
+        // FORCE completion update for completed jobs - this ensures Job Queue UI shows 100%
+        if (genJob.status === 'completed') {
+          updateJob(genJob.id, {
+            status: 'completed',
+            progress: 100,
+            completedAt: queueJob.completedAt,
+            resultUrl: queueJob.resultUrl,
+            title: queueJob.title,
+            description: queueJob.description,
+          });
+          markJobCompleted(genJob.id);
+        } else {
+          // Regular update for non-completed jobs
+          updateJob(genJob.id, {
+            status: queueJob.status,
+            progress: queueJob.progress,
+            completedAt: queueJob.completedAt,
+            error: queueJob.error,
+            resultUrl: queueJob.resultUrl,
+            title: queueJob.title,
+            description: queueJob.description,
+          });
+          
+          if (genJob.status === 'failed') {
+            markJobCompleted(genJob.id);
+          }
+        }
+        
         syncedJobs.current.add(genJob.id);
-      } else {
-        // Update existing job
-        updateJob(genJob.id, {
-          status: queueJob.status,
-          progress: queueJob.progress,
-          completedAt: queueJob.completedAt,
-          error: queueJob.error,
-          resultUrl: queueJob.resultUrl,
-        });
+      } else if (!syncedJobs.current.has(genJob.id)) {
+        // Skip jobs we've already processed as completed (only for NEW jobs)
+        if (completedJobIds.has(genJob.id) && genJob.status === 'completed') {
+          return;
+        }
+        
+        // Add new jobs that are still active (not completed/failed)
+        if (genJob.status === 'pending' || genJob.status === 'processing') {
+          addJob(queueJob);
+          syncedJobs.current.add(genJob.id);
+        } else {
+          markJobCompleted(genJob.id);
+          syncedJobs.current.add(genJob.id);
+        }
       }
     });
   }, [convertToQueueJob, addJob, updateJob]);
@@ -265,6 +344,7 @@ export function useGenerationTracking() {
    */
   const processActiveJobs = useCallback((jobs: GenerationJob[]) => {
     const currentJobIds = new Set(jobs.map((j) => j.id));
+    const trackedJobs = getTrackedJobIds();
 
     // Remove notifications for jobs that are no longer active
     activeNotifications.current.forEach((api, jobId) => {
@@ -275,8 +355,18 @@ export function useGenerationTracking() {
     });
 
     // Create notifications for new active jobs
+    // Only create if we don't already have a notification AND we haven't tracked this job before
+    // OR if the job was tracked but we don't have an active notification (page refresh scenario)
     jobs.forEach((job) => {
-      if (!activeNotifications.current.has(job.id)) {
+      const hasActiveNotification = activeNotifications.current.has(job.id);
+      const wasTracked = trackedJobs.has(job.id);
+      
+      // Only create notification if:
+      // 1. We don't have an active notification for this job
+      // 2. AND either:
+      //    a. The job was never tracked before (new job), OR
+      //    b. The job was tracked but we're on initial mount (page refresh - restore notification)
+      if (!hasActiveNotification && (!wasTracked || isInitialMount.current)) {
         const typeLabel = getJobTypeLabel(job.type);
         // Use job.description if available, otherwise fall back to job.title
         // But filter out falsy values to avoid displaying "0" or "undefined"
@@ -298,10 +388,28 @@ export function useGenerationTracking() {
   const processRecentJobs = useCallback(
     (jobs: GenerationJob[], isInitial: boolean) => {
       const trackedJobs = getTrackedJobIds();
+      
+      // Deduplicate jobs by ID to prevent processing the same job multiple times
+      const seenJobIds = new Set<string>();
+      const uniqueJobs = jobs.filter((job) => {
+        if (seenJobIds.has(job.id)) {
+          return false; // Skip duplicate
+        }
+        seenJobIds.add(job.id);
+        return true;
+      });
 
-      jobs.forEach((job) => {
+      uniqueJobs.forEach((job) => {
         // Skip if we've already notified about this job
         if (notifiedCompletedJobs.current.has(job.id)) {
+          return;
+        }
+
+        // Check completed jobs RIGHT NOW (not cached at start) to catch jobs marked in this loop
+        const completedJobIds = getCompletedJobIds();
+        if (completedJobIds.has(job.id)) {
+          // Still mark as notified to prevent future processing
+          notifiedCompletedJobs.current.add(job.id);
           return;
         }
 
@@ -309,14 +417,35 @@ export function useGenerationTracking() {
         const wasTracked = trackedJobs.has(job.id);
 
         // Only show completion notifications for jobs that were tracked
-        // or during initial mount (to catch jobs completed during refresh)
-        if (wasTracked || (isInitial && job.completedAt)) {
+        // or during initial mount (to catch jobs completed/failed during refresh)
+        // For failed jobs, also check if they have a completedAt timestamp
+        const shouldNotify = wasTracked || (isInitial && (job.completedAt || job.status === 'failed'));
+        
+        if (shouldNotify) {
           const typeLabel = getJobTypeLabel(job.type);
 
           // Check if we have an active notification for this job to update
           const existingApi = activeNotifications.current.get(job.id);
 
           if (job.status === 'completed') {
+            // Mark as completed in localStorage FIRST to prevent duplicate notifications
+            markJobCompleted(job.id);
+            
+            // IMMEDIATELY update Job Queue to 100% when showing success notification
+            const queueJob = convertToQueueJob(job);
+            updateJob(job.id, {
+              status: 'completed',
+              progress: 100,
+              completedAt: queueJob.completedAt,
+              resultUrl: queueJob.resultUrl,
+              resultId: queueJob.resultId,
+              title: queueJob.title,
+              description: queueJob.description,
+            });
+            
+            // Mark as notified BEFORE showing notification to prevent duplicates
+            notifiedCompletedJobs.current.add(job.id);
+            
             if (existingApi) {
               existingApi.update({
                 type: 'success',
@@ -324,15 +453,36 @@ export function useGenerationTracking() {
                 description: `"${job.title}" is ready`,
                 duration: 5000,
               });
-            } else if (wasTracked) {
-              // Show a new success notification
+              activeNotifications.current.delete(job.id);
+            } else if (wasTracked || isInitial) {
+              // Show a new success notification (only if tracked or on initial mount)
               notification.success({
                 title: `${typeLabel} Generated`,
                 description: `"${job.title}" is ready`,
                 duration: 5000,
               });
             }
+            
+            // Clean up tracking
+            untrackJob(job.id);
+            return; // Early return to prevent duplicate processing
           } else if (job.status === 'failed') {
+            // Mark as completed in localStorage FIRST to prevent duplicate notifications
+            markJobCompleted(job.id);
+            
+            // Update Job Queue to show failed status
+            const queueJob = convertToQueueJob(job);
+            updateJob(job.id, {
+              status: 'failed',
+              progress: 0,
+              error: queueJob.error,
+              title: queueJob.title,
+              description: queueJob.description,
+            });
+            
+            // Mark as notified BEFORE showing notification to prevent duplicates
+            notifiedCompletedJobs.current.add(job.id);
+            
             if (existingApi) {
               existingApi.update({
                 type: 'error',
@@ -340,23 +490,29 @@ export function useGenerationTracking() {
                 description: job.errorMessage || `Failed to generate "${job.title}"`,
                 duration: 7000,
               });
-            } else if (wasTracked) {
+              activeNotifications.current.delete(job.id);
+            } else if (wasTracked || isInitial) {
+              // Show a new error notification (only if tracked or on initial mount)
               notification.error({
                 title: `${typeLabel} Failed`,
                 description: job.errorMessage || `Failed to generate "${job.title}"`,
                 duration: 7000,
               });
             }
+            
+            // Clean up tracking
+            untrackJob(job.id);
+            return; // Early return to prevent duplicate processing
           }
 
-          // Mark as notified and clean up
+          // Mark as notified and clean up (for completed jobs)
           notifiedCompletedJobs.current.add(job.id);
           activeNotifications.current.delete(job.id);
           untrackJob(job.id);
         }
       });
     },
-    []
+    [convertToQueueJob, updateJob]
   );
 
   /**
@@ -365,11 +521,19 @@ export function useGenerationTracking() {
   const pollJobs = useCallback(async () => {
     const { activeJobs, recentJobs } = await fetchJobs();
 
-    // Sync all jobs to job queue panel
-    syncJobsToQueue([...activeJobs, ...recentJobs]);
+    // Filter out jobs that are in recentJobs from activeJobs to prevent duplicate processing
+    const recentJobIds = new Set(recentJobs.map(j => j.id));
+    const filteredActiveJobs = activeJobs.filter(job => !recentJobIds.has(job.id));
 
-    processActiveJobs(activeJobs);
+    // Sync all jobs to job queue panel
+    syncJobsToQueue([...filteredActiveJobs, ...recentJobs]);
+
+    // Process recent jobs first (completed/failed) to dismiss loading notifications
     processRecentJobs(recentJobs, isInitialMount.current);
+    
+    // Then process active jobs (to show loading notifications)
+    // Only process jobs that aren't in recentJobs to avoid duplicates
+    processActiveJobs(filteredActiveJobs);
 
     isInitialMount.current = false;
   }, [fetchJobs, processActiveJobs, processRecentJobs, syncJobsToQueue]);

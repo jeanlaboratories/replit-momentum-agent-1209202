@@ -714,10 +714,37 @@ async function handleTeamChat(messages: any[], teamContext: any = {}, brandId?: 
   const modelName = settings?.teamChatModel || settings?.textModel || 'gemini-2.0-flash';
   const model = genAI.getGenerativeModel({ model: modelName });
 
-  const history = messages.slice(0, -1).map((msg: any) => ({
-    role: msg.role === 'user' ? 'user' : 'model',
-    parts: [{ text: msg.content }],
-  }));
+  // Build proper chat history for Google Generative AI
+  // Must start with 'user' role and alternate between 'user' and 'model'
+  const allMessages = messages.slice(0, -1);
+  const history: any[] = [];
+  
+  for (let i = 0; i < allMessages.length; i++) {
+    const msg = allMessages[i];
+    const role = msg.role === 'user' ? 'user' : 'model';
+    
+    // Ensure history starts with 'user' and alternates properly
+    if (history.length === 0 && role !== 'user') {
+      // Skip leading non-user messages
+      continue;
+    }
+    
+    const lastRole = history.length > 0 ? history[history.length - 1].role : null;
+    
+    // Skip consecutive messages with the same role to maintain alternation
+    if (lastRole && lastRole === role) {
+      // If we have consecutive user messages, combine them
+      if (role === 'user') {
+        history[history.length - 1].parts[0].text += '\n\n' + msg.content;
+      }
+      continue;
+    }
+    
+    history.push({
+      role,
+      parts: [{ text: msg.content }],
+    });
+  }
   const lastMessage = messages[messages.length - 1]?.content || '';
 
   const chat = model.startChat({ history });

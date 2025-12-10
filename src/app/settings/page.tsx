@@ -3,7 +3,7 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import { useAuth } from '@/hooks/use-auth';
 import { useRouter } from 'next/navigation';
-import { Loader2, Settings, BrainCircuit, ImageIcon, Clapperboard, Text, Database, TestTube, ExternalLink, Palette, Users, Save } from 'lucide-react';
+import { Loader2, Settings, BrainCircuit, ImageIcon, Clapperboard, Text, Database, TestTube, ExternalLink, Palette, Users, Save, Music2 } from 'lucide-react';
 import { GlassCard, GlassCardContent, GlassCardDescription, GlassCardHeader, GlassCardTitle } from '@/components/ui/glass-card';
 import { PageTransition } from '@/components/ui/page-transition';
 import { Button } from '@/components/ui/button';
@@ -483,6 +483,27 @@ export default function SettingsPage() {
                                           </SelectContent>
                                       </Select>
                                       <p className="text-xs text-muted-foreground">Used for creating videos.</p>
+                                  </div>
+
+                                  <div className="space-y-2">
+                                      <Label className="flex items-center gap-2">
+                                          <Music2 className="w-4 h-4" />
+                                          Music Generation Model
+                                      </Label>
+                                      <Select
+                                          value={aiSettings.musicModel}
+                                          onValueChange={(value) => setAiSettings({ ...aiSettings, musicModel: value })}
+                                      >
+                                          <SelectTrigger>
+                                              <SelectValue placeholder="Select model" />
+                                          </SelectTrigger>
+                                          <SelectContent>
+                                              {availableModels.music.map(model => (
+                                                  <SelectItem key={model.id} value={model.id}>{model.name}</SelectItem>
+                                              ))}
+                                          </SelectContent>
+                                      </Select>
+                                      <p className="text-xs text-muted-foreground">Used for music generation in Music Gallery.</p>
                                   </div>
                               </div>
                               <Button onClick={handleSaveAiSettings} disabled={isSavingAiSettings}>

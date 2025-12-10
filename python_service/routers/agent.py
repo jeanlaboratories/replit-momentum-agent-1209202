@@ -1091,3 +1091,46 @@ async def media_index_single_endpoint(request: Request):
             "status": "skipped",
             "message": f"Indexing skipped due to error: {str(e)}"
         }
+
+@router.post("/delete-last-message")
+async def delete_last_message(request: DeleteSessionRequest):
+    """
+    Delete the last interaction (User + Assistant) from the agent session.
+    Useful for 'Undo' or 'Retry' functionality when editing messages.
+    """
+    _, _, adk_session_service, _ = get_adk_components()
+
+    if not adk_session_service:
+        raise HTTPException(status_code=503, detail="Session service not initialized")
+
+    try:
+        # Use same session ID format as in chat endpoint
+        user_id = request.user_id or "anonymous"
+        session_id = request.session_id or "default"
+        
+        if request.brand_id and request.user_id:
+            session_id = f"{request.brand_id}_{request.user_id}"
+        elif request.user_id:
+            session_id = f"user_{request.user_id}"
+
+        logger.info(f"Deleting last message for session {session_id}")
+
+        # For now, we'll reset the whole session as a fallback since
+        # granular message deletion is not fully implemented in ADK yet
+        if hasattr(adk_session_service, 'delete_session'):
+            await adk_session_service.delete_session(
+                app_name="MOMENTUM",
+                user_id=user_id,
+                session_id=session_id
+            )
+            logger.info(f"Reset session {session_id} (last message deletion)")
+            return {
+                "status": "success", 
+                "message": "Session reset to undo last interaction"
+            }
+
+        raise HTTPException(status_code=501, detail="Delete last message not supported")
+
+    except Exception as e:
+        logger.error(f"Error deleting last message: {e}")
+        raise HTTPException(status_code=500, detail=str(e))

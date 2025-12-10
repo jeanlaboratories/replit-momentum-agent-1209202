@@ -35,13 +35,6 @@ import { useJobQueue } from '@/contexts/job-queue-context';
 // Import extracted messaging modules  
 import { createSendMessageFunction } from '@/lib/chat-messaging';
 import { createHandleSaveEdit } from '@/lib/chat-handlers';
-import { 
-  createHandleOpenCampaign, 
-  createHandleCreateEvent, 
-  createHandleGenerateCampaign,
-  createRenderStructuredData,
-  isCampaignData 
-} from '@/lib/campaign-handlers';
 
 interface MediaAttachment {
   type: 'image' | 'video' | 'pdf' | 'audio';
@@ -781,12 +774,624 @@ export function GeminiChatbot({ brandId, isFullScreen = false }: GeminiChatbotPr
     setEditContent(message.content);
   };
 
-  const handleSaveEdit = createHandleSaveEdit(
-    brandId, messages, editContent, selectedMode, selectedCategory,
-    teamContext, currentConversationId, setMessages, setEditingMessageId,
-    setEditContent, setIsLoading, setContextStats, setSharedThinkingProcess,
-    refreshConversations, toast
-  );
+  const handleSaveEdit = async (messageId: string) => {
+    if (!brandId || !messageId || !editContent.trim()) return;
+
+    try {
+      const response = await fetch('/api/chat/update', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          brandId,
+          messageId,
+          content: editContent.trim(),
+          role: 'user', // Explicitly send role
+          timestamp: messages.find(m => m.id === messageId)?.timestamp, // Send original timestamp if available
+          deleteNextOnly: true, // Only delete the immediate next assistant message
+          cascade: false,
+        }),
+      });
+
+      if (response.ok) {
+        // Calculate the updated messages before state update
+        const messageIndex = messages.findIndex((m) => m.id === messageId);
+
+        if (messageIndex === -1) {
+          toast({
+            title: "Error",
+            description: "Message not found",
+            variant: "destructive",
+          });
+          return;
+        }
+
+        // Update the edited message in the array
+        const updatedMessages = [...messages];
+        updatedMessages[messageIndex] = {
+          ...updatedMessages[messageIndex],
+          content: editContent.trim(),
+        };
+
+        // Remove only the immediate next assistant message (if it exists)
+        const nextMessageIndex = messageIndex + 1;
+        if (nextMessageIndex < updatedMessages.length && updatedMessages[nextMessageIndex].role === 'assistant') {
+          updatedMessages.splice(nextMessageIndex, 1);
+        }
+
+        // Update local state - only remove the immediate assistant response
+        setMessages(updatedMessages);
+
+        setEditingMessageId(null);
+        setEditContent('');
+
+        toast({
+          title: "Message updated",
+          description: "Regenerating response...",
+        });
+
+        // Trigger regeneration by calling the API directly
+        // We don't use sendMessage here because we've already updated the message
+        // and removed subsequent messages. We just need to get a new AI response.
+        setIsLoading(true);
+
+        try {
+          // Check if we edited the LAST user message.
+          // If so, we should tell the backend to "forget" the previous turn so context usage doesn't grow.
+          // The updatedMessages array already has the next assistant message removed (if it existed).
+          // So if the edited message is now the last one (or second to last if we added a placeholder),
+          // we can assume it's the last turn.
+
+          // We haven't added the placeholder yet in `updatedMessages`.
+          // So if messageIndex is the last index, it's the last message.
+          const isLastUserMessage = messageIndex === updatedMessages.length - 1;
+          const isFirstMessage = messageIndex === 0;
+
+          if (isFirstMessage) {
+            // If editing the FIRST message, we should clear the entire session to start fresh.
+            // This avoids "forking" the conversation weirdly on the backend.
+            try {
+              console.log('Editing first message, clearing session...');
+              toast({
+                title: "Resetting Session",
+                description: "Starting a fresh conversation from this edit...",
+              });
+              await fetch('/api/chat/delete-session', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ brandId }),
+              });
+              // We also need to reset contextStats visually
+              setContextStats(null);
+            } catch (err) {
+              console.error('Failed to clear session:', err);
+            }
+          } else if (isLastUserMessage) {
+            try {
+              console.log('Editing last message, syncing with backend to undo last turn...');
+              // Optional: Show toast for debugging/feedback
+              // toast({ title: "Syncing", description: "Removing previous turn..." });
+
+              await fetch('/api/chat/undo-last-turn', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ brandId }),
+              });
+            } catch (err) {
+              console.error('Failed to undo last turn:', err);
+              // Continue anyway, regeneration will just append (suboptimal but functional)
+            }
+          }
+
+          // Build messages up to and including the edited message for API call
+          const messagesForAPI = updatedMessages.slice(0, messageIndex + 1);
+
+          // Add placeholder for assistant response at the correct position
+          const assistantMessageIndex = messageIndex + 1;
+          const messagesWithPlaceholder = [
+            ...updatedMessages.slice(0, assistantMessageIndex),
+            { role: 'assistant' as const, content: '', mode: selectedMode },
+            ...updatedMessages.slice(assistantMessageIndex),
+          ];
+          setMessages(messagesWithPlaceholder);
+
+          // Now make the API call with the updated messages (up to the edited message)
+          // IMPORTANT: Don't filter YouTube URLs from historical messages - they were saved as media
+          // and should be preserved for display. Only filter when sending NEW messages.
+          const apiMessages = messagesForAPI.map(m => ({
+            role: m.role,
+            content: m.content,
+            // Preserve all media from historical messages - don't filter YouTube URLs here
+            // The backend will handle YouTube URLs appropriately when processing
+            media: m.media,
+          }));
+
+          // Get media from the edited message to resend
+          // Filter out YouTube URLs - they should be in the message text, not as attachments
+          const editedMessage = updatedMessages[messageIndex];
+          const mediaToResend = editedMessage.media 
+            ? editedMessage.media
+                .filter(m => {
+                  // Skip YouTube URLs - they can't be processed as video attachments
+                  if (m.type === 'video' && m.url && isYouTubeUrl(m.url)) {
+                    console.log('[GeminiChatbot] Filtering out YouTube URL from mediaToResend:', m.url);
+                    return false;
+                  }
+                  return true;
+                })
+                .map(m => ({
+                  type: m.type,
+                  url: m.url,
+                  fileName: m.fileName,
+                  mimeType: m.mimeType
+                }))
+            : [];
+
+          // Call the API to get the AI response
+          const aiResponse = await fetch('/api/chat', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              messages: apiMessages,
+              mode: selectedMode,
+              media: mediaToResend,
+              brandId: brandId,
+              teamContext: selectedCategory === 'team-tools' ? teamContext : undefined,
+            }),
+          });
+
+          if (!aiResponse.ok) {
+            throw new Error('Failed to get response');
+          }
+
+          // Handle the response (same logic as sendMessage)
+          const contentType = aiResponse.headers.get('content-type');
+
+          if (contentType?.includes('application/json')) {
+            // Handle structured JSON response from Marketing Agent / ADK Agent
+            const data = await aiResponse.json();
+
+            const originalContent = data.content || '';
+            let generatedMedia: MediaAttachment[] = [];
+            let explainabilityData: { summary: string; confidence: number; appliedControls: string[]; brandElements: string[]; avoidedElements: string[]; } | undefined = undefined;
+
+            // Find all markers in the content with their positions to preserve order
+            const markers: Array<{ type: 'image' | 'video' | 'image_url' | 'video_url' | 'explainability'; position: number }> = [];
+
+            let searchPos = 0;
+            while (searchPos < originalContent.length) {
+              const imagePos = originalContent.indexOf('__IMAGE_DATA__', searchPos);
+              const videoPos = originalContent.indexOf('__VIDEO_DATA__', searchPos);
+              const imageUrlPos = originalContent.indexOf('__IMAGE_URL__', searchPos);
+              const videoUrlPos = originalContent.indexOf('__VIDEO_URL__', searchPos);
+              const explainPos = originalContent.indexOf('__EXPLAINABILITY__', searchPos);
+
+              const nextPos = Math.min(
+                imagePos >= 0 ? imagePos : Infinity,
+                videoPos >= 0 ? videoPos : Infinity,
+                imageUrlPos >= 0 ? imageUrlPos : Infinity,
+                videoUrlPos >= 0 ? videoUrlPos : Infinity,
+                explainPos >= 0 ? explainPos : Infinity
+              );
+
+              if (nextPos === Infinity) break;
+
+              if (nextPos === imagePos) {
+                markers.push({ type: 'image', position: imagePos });
+                searchPos = imagePos + '__IMAGE_DATA__'.length;
+              } else if (nextPos === videoPos) {
+                markers.push({ type: 'video', position: videoPos });
+                searchPos = videoPos + '__VIDEO_DATA__'.length;
+              } else if (nextPos === imageUrlPos) {
+                markers.push({ type: 'image_url', position: imageUrlPos });
+                searchPos = imageUrlPos + '__IMAGE_URL__'.length;
+              } else if (nextPos === videoUrlPos) {
+                markers.push({ type: 'video_url', position: videoUrlPos });
+                searchPos = videoUrlPos + '__VIDEO_URL__'.length;
+              } else if (nextPos === explainPos) {
+                markers.push({ type: 'explainability', position: explainPos });
+                searchPos = explainPos + '__EXPLAINABILITY__'.length;
+              }
+            }
+
+            // Process markers in order to preserve media sequence
+            for (let i = 0; i < markers.length; i++) {
+              const marker = markers[i];
+              let markerLength = 0;
+              if (marker.type === 'image') markerLength = '__IMAGE_DATA__'.length;
+              else if (marker.type === 'video') markerLength = '__VIDEO_DATA__'.length;
+              else if (marker.type === 'image_url') markerLength = '__IMAGE_URL__'.length;
+              else if (marker.type === 'video_url') markerLength = '__VIDEO_URL__'.length;
+              else markerLength = '__EXPLAINABILITY__'.length;
+
+              const startPos = marker.position + markerLength;
+              const nextMarkerPos = markers[i + 1]?.position ?? originalContent.length;
+
+              let payload = originalContent.substring(startPos, nextMarkerPos).trim();
+
+              if (marker.type === 'image') {
+                const base64Match = payload.match(/[A-Za-z0-9+/=]{20,}/);
+                const cleanBase64 = base64Match ? base64Match[0] : '';
+                if (cleanBase64 && cleanBase64.length > 100) {
+                  generatedMedia.push({
+                    type: 'image',
+                    url: 'data:image/png;base64,' + cleanBase64,
+                  });
+                }
+              } else if (marker.type === 'video') {
+                const base64Match = payload.match(/[A-Za-z0-9+/=]{20,}/);
+                const cleanBase64 = base64Match ? base64Match[0] : '';
+                if (cleanBase64 && cleanBase64.length > 100) {
+                  generatedMedia.push({
+                    type: 'video',
+                    url: 'data:video/mp4;base64,' + cleanBase64,
+                  });
+                }
+              } else if (marker.type === 'image_url') {
+                // Extract URL (assume it ends at whitespace or end of string)
+                const urlMatch = payload.match(/https?:\/\/[^\s]+/);
+                const url = urlMatch ? urlMatch[0] : payload;
+                if (url) {
+                  generatedMedia.push({
+                    type: 'image',
+                    url: url,
+                  });
+                }
+              } else if (marker.type === 'video_url') {
+                const urlMatch = payload.match(/https?:\/\/[^\s]+/);
+                const url = urlMatch ? urlMatch[0] : payload;
+                if (url) {
+                  generatedMedia.push({
+                    type: 'video',
+                    url: url,
+                  });
+                }
+              } else if (marker.type === 'explainability') {
+                const explainJson = payload.split('\n')[0]?.trim();
+                if (explainJson) {
+                  try {
+                    explainabilityData = JSON.parse(explainJson);
+                  } catch (e) {
+                    console.error('Failed to parse explainability:', e);
+                  }
+                }
+              }
+            }
+
+            // Extract clean text content (everything before first marker)
+            const firstMarkerPos = markers.length > 0 ? markers[0].position : originalContent.length;
+            const finalContent = originalContent.substring(0, firstMarkerPos).trim();
+
+            setMessages((prev) => {
+              const updated = [...prev];
+              updated[assistantMessageIndex] = {
+                role: 'assistant',
+                content: finalContent,
+                mode: selectedMode,
+                structuredData: data.data,
+                media: generatedMedia.length > 0 ? deduplicateMedia(generatedMedia) : undefined,
+                explainability: explainabilityData,
+              };
+              return updated;
+            });
+          } else {
+            // Handle streaming response (NDJSON for Agent, text/plain for Gemini)
+            // We check both Content-Type and the actual content to be robust
+            const isNdjsonHeader = contentType?.includes('application/x-ndjson');
+
+            if (isNdjsonHeader || contentType?.includes('text/plain') || contentType?.includes('application/json')) {
+              const reader = aiResponse.body?.getReader();
+              const decoder = new TextDecoder();
+              let assistantContent = '';
+              let thinkingProcess: string[] = [];
+              let generatedMedia: MediaAttachment[] = [];
+              let structuredData: any = null;
+              let currentExplainability: any = null; // Track explainability for saving to history
+              let isNdjson = isNdjsonHeader; // Trust header initially, but verify with content if needed
+
+              if (reader) {
+                let buffer = '';
+                let firstChunkChecked = false;
+
+                while (true) {
+                  const { done, value } = await reader.read();
+                  if (done) break;
+
+                  const chunk = decoder.decode(value, { stream: true });
+
+                  // Auto-detect NDJSON from content if header didn't specify it
+                  if (!firstChunkChecked && !isNdjson) {
+                    const trimmedChunk = chunk.trim();
+                    if (trimmedChunk.startsWith('{"type":') || trimmedChunk.startsWith('{"type" :')) {
+                      console.log('Auto-detected NDJSON stream from content (regeneration)');
+                      isNdjson = true;
+                    }
+                    firstChunkChecked = true;
+                  }
+
+                  if (isNdjson) {
+                    // Handle NDJSON stream (Agent Mode)
+                    buffer += chunk;
+                    const lines = buffer.split('\n');
+                    buffer = lines.pop() || ''; // Keep incomplete line in buffer
+
+                    for (const line of lines) {
+                      if (!line.trim()) continue;
+
+                      try {
+                        const event = JSON.parse(line);
+
+                        if (event.type === 'log') {
+                          // Add to thinking process
+                          thinkingProcess.push(event.content);
+                          // Update shared thinking process for closed bubble indicator
+                          setSharedThinkingProcess([...thinkingProcess]);
+                          // Update UI to show thinking
+                          setMessages((prev) => {
+                            const updated = [...prev];
+                            if (updated[assistantMessageIndex] && updated[assistantMessageIndex].role === 'assistant') {
+                              updated[assistantMessageIndex] = {
+                                ...updated[assistantMessageIndex],
+                                content: assistantContent || 'Thinking...', // Show thinking if no content yet
+                                thoughts: [...thinkingProcess],
+                              };
+                            }
+                            return updated;
+                          });
+                        } else if (event.type === 'context_update') {
+                          setContextStats({
+                            tokenUsage: event.token_usage,
+                            maxTokens: event.max_tokens,
+                            activeMedia: event.active_media
+                          });
+                        } else if (event.type === 'image') {
+                          // Handle generated image
+                          const imgData = event.data;
+                          let url = '';
+                          if (imgData.format === 'url') {
+                            url = imgData.url;
+                          } else if (imgData.format === 'base64') {
+                            url = `data:image/png;base64,${imgData.data}`;
+                          }
+
+                          if (url) {
+                            generatedMedia.push({
+                              type: 'image',
+                              url: url,
+                              fileName: imgData.prompt
+                            });
+
+                            // Create explainability for Agent-generated images
+                            const agentExplainability = imgData.explainability || {
+                              summary: `Image generated by AI Agent using Imagen 4.0 with prompt: "${imgData.prompt || 'Generated Image'}"`,
+                              confidence: 0.85,
+                              appliedControls: ['AI Agent Generation', 'Imagen 4.0'],
+                              brandElements: [],
+                              avoidedElements: []
+                            };
+
+                            // Track explainability for saving to history
+                            currentExplainability = agentExplainability;
+
+                            // Update UI immediately with image and explainability
+                            setMessages((prev) => {
+                              const updated = [...prev];
+                              updated[assistantMessageIndex] = {
+                                ...updated[assistantMessageIndex],
+                                media: [...generatedMedia],
+                                explainability: agentExplainability
+                              };
+                              return updated;
+                            });
+
+                            // Save to Media Library (Unified Media)
+                            if (brandId) {
+                              const imageId = `chatbot-img-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+                              saveChatbotImageAction(
+                                brandId,
+                                imageId,
+                                imgData.prompt || 'Generated Image',
+                                url
+                              ).catch(err => console.error('Failed to save generated image to library:', err));
+                            }
+                          }
+                        } else if (event.type === 'video') {
+                          // Handle generated video
+                          const vidData = event.data;
+                          let url = '';
+                          if (vidData.format === 'url') {
+                            url = vidData.url;
+                          } else if (vidData.format === 'base64') {
+                            url = `data:video/mp4;base64,${vidData.data}`;
+                          }
+
+                          if (url) {
+                            generatedMedia.push({
+                              type: 'video',
+                              url: url,
+                              fileName: vidData.prompt
+                            });
+
+                            // Create explainability for Agent-generated videos
+                            const videoExplainability = vidData.explainability || {
+                              summary: `Video generated by AI Agent using Veo 2 with prompt: "${vidData.prompt || 'Generated Video'}"`,
+                              confidence: 0.85,
+                              appliedControls: ['AI Agent Generation', 'Veo 2'],
+                              brandElements: [],
+                              avoidedElements: []
+                            };
+
+                            // Track explainability for saving to history
+                            currentExplainability = videoExplainability;
+
+                            // Update UI immediately with video and explainability
+                            setMessages((prev) => {
+                              const updated = [...prev];
+                              updated[assistantMessageIndex] = {
+                                ...updated[assistantMessageIndex],
+                                media: [...generatedMedia],
+                                explainability: videoExplainability
+                              };
+                              return updated;
+                            });
+
+                            // Save to Media Library (Unified Media)
+                            if (brandId) {
+                              const videoId = `chatbot-vid-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+                              saveChatbotVideoAction(
+                                brandId,
+                                videoId,
+                                vidData.prompt || 'Generated Video',
+                                url,
+                                vidData.input_image_url,
+                                vidData.character_reference_url,
+                                vidData.start_frame_url,
+                                vidData.end_frame_url
+                              ).catch(err => console.error('Failed to save generated video to library:', err));
+                            }
+                          }
+                        } else if (event.type === 'text') {
+                          // Handle intermediate text stream
+                          assistantContent += event.content;
+                          setMessages((prev) => {
+                            const updated = [...prev];
+                            if (updated[assistantMessageIndex] && updated[assistantMessageIndex].role === 'assistant') {
+                              updated[assistantMessageIndex] = {
+                                ...updated[assistantMessageIndex],
+                                content: assistantContent,
+                                thoughts: thinkingProcess.length > 0 ? thinkingProcess : undefined,
+                              };
+                            }
+                            return updated;
+                          });
+                        } else if (event.type === 'data') {
+                          structuredData = event.data;
+                        } else if (event.type === 'final_response') {
+                          assistantContent = event.content;
+
+                          // Extract __IMAGE_URL__ and __VIDEO_URL__ markers from content
+                          // These are used by media search tools to display images in chat
+                          // Use non-greedy match to capture URL between markers
+                          const imageUrlMatches = assistantContent.matchAll(/__IMAGE_URL__(.+?)__IMAGE_URL__/g);
+                          for (const match of imageUrlMatches) {
+                            if (match[1]) {
+                              generatedMedia.push({
+                                type: 'image',
+                                url: match[1].trim(),
+                              });
+                            }
+                          }
+                          const videoUrlMatches = assistantContent.matchAll(/__VIDEO_URL__(.+?)__VIDEO_URL__/g);
+                          for (const match of videoUrlMatches) {
+                            if (match[1]) {
+                              generatedMedia.push({
+                                type: 'video',
+                                url: match[1].trim(),
+                              });
+                            }
+                          }
+
+                          // Clean the markers from displayed content
+                          const cleanedContent = assistantContent
+                            .replace(/__IMAGE_URL__.+?__IMAGE_URL__/g, '')
+                            .replace(/__VIDEO_URL__.+?__VIDEO_URL__/g, '')
+                            .trim();
+                          assistantContent = cleanedContent;
+
+                          // Final update - include explainability if available
+                          setMessages((prev) => {
+                            const updated = [...prev];
+                            updated[assistantMessageIndex] = {
+                              role: 'assistant',
+                              content: assistantContent,
+                              mode: selectedMode,
+                              media: generatedMedia.length > 0 ? deduplicateMedia(generatedMedia) : undefined,
+                              structuredData: structuredData,
+                              thoughts: thinkingProcess.length > 0 ? thinkingProcess : undefined,
+                              explainability: currentExplainability || undefined,
+                            };
+                            return updated;
+                          });
+
+                          // Save the complete assistant message to history (including explainability)
+                          if (brandId) {
+                            fetch('/api/chat/history', {
+                              method: 'POST',
+                              headers: { 'Content-Type': 'application/json' },
+                              body: JSON.stringify({
+                                brandId,
+                                role: 'assistant',
+                                content: assistantContent,
+                                media: generatedMedia.length > 0 ? deduplicateMedia(generatedMedia) : undefined,
+                                thoughts: thinkingProcess.length > 0 ? thinkingProcess : undefined,
+                                structuredData: structuredData,
+                                explainability: currentExplainability || undefined,
+                                // Use currentConversationId here since we're in handleSaveEdit (regenerating response for existing conversation)
+                                conversationId: currentConversationId !== DEFAULT_CONVERSATION_ID ? currentConversationId : undefined,
+                              }),
+                            }).then(() => refreshConversations()).catch(err => console.error('Failed to save assistant message:', err));
+                          }
+                        } else if (event.type === 'error') {
+                          console.error('Stream error:', event.content);
+                          toast({
+                            title: "Error during processing",
+                            description: event.content,
+                            variant: "destructive"
+                          });
+                        }
+                      } catch (e) {
+                        console.error('Error parsing NDJSON line:', e, line);
+                      }
+                    }
+                  } else {
+                    // Handle plain text stream (Gemini Mode)
+                    assistantContent += chunk;
+                    setMessages((prev) => {
+                      const updated = [...prev];
+                      if (updated[assistantMessageIndex] && updated[assistantMessageIndex].role === 'assistant') {
+                        updated[assistantMessageIndex] = {
+                          role: 'assistant',
+                          content: assistantContent,
+                          mode: selectedMode,
+                        };
+                      }
+                      return updated;
+                    });
+                  }
+                }
+              }
+            }
+          }
+
+          setIsLoading(false);
+        } catch (error) {
+          console.error('Error regenerating response:', error);
+          toast({
+            title: "Error",
+            description: "Failed to regenerate response",
+            variant: "destructive",
+          });
+          // Remove the placeholder assistant message
+          setMessages((prev) => prev.slice(0, -1));
+          setIsLoading(false);
+        }
+      } else {
+        const errorData = await response.json();
+        toast({
+          title: "Error",
+          description: errorData.error || "Failed to update message",
+          variant: "destructive",
+        });
+      }
+    } catch (error) {
+      console.error('Error updating message:', error);
+      toast({
+        title: "Error",
+        description: "Network error. Please try again.",
+        variant: "destructive",
+      });
+    }
+  };
+
   const handleCancelEdit = () => {
     setEditingMessageId(null);
     setEditContent('');
@@ -971,29 +1576,363 @@ export function GeminiChatbot({ brandId, isFullScreen = false }: GeminiChatbotPr
         failJob, setProgress, toast]
   );
 
-  const handleGenerateCampaign = React.useMemo(() =>
-    createHandleGenerateCampaign(
-      brandId, setIsSavingCampaign, closeChatbot, 
-      addJob, setProgress, completeJob, failJob, toast
-    ),
-    [brandId, setIsSavingCampaign, closeChatbot, addJob, setProgress, completeJob, failJob, toast]
-  );
+      // Import the save campaign action dynamically
+      const {
+        saveCampaignAction,
+        saveChatbotImageAction,
+        saveChatbotVideoAction
+      } = await import('@/app/actions');
 
-  const handleOpenCampaign = React.useMemo(() => 
-    createHandleOpenCampaign(brandId, setIsSavingCampaign, closeChatbot, router),
-    [brandId, setIsSavingCampaign, closeChatbot, router]
-  );
+      // Transform campaignDays to GeneratedCampaignContent format
+      const generatedContent = campaignData.campaignDays.map((day) => ({
+        day: day.day,
+        date: day.date,
+        contentBlocks: day.contentBlocks.map((block) => ({
+          id: block.id,
+          contentType: block.contentType,
+          adCopy: block.keyMessage,
+          imagePrompt: `Generate an image for: ${block.keyMessage}`,
+          keyMessage: block.keyMessage,
+          toneOfVoice: block.toneOfVoice,
+          scheduledTime: block.scheduledTime,
+        })),
+      }));
 
-  const handleCreateEvent = React.useMemo(() =>
-    createHandleCreateEvent(brandId, setIsSavingCampaign, closeChatbot, toast),
-    [brandId, setIsSavingCampaign, closeChatbot, toast]
-  );
+      // Save the campaign
+      const result = await saveCampaignAction(
+        brandId,
+        generatedContent,
+        null,
+        campaignData.campaignName,
+        null,
+        campaignData.prompt || null,
+        (campaignData as any).characterConsistency || null
+      );
 
+      if (result.error) {
+        throw new Error(result.message);
+      }
 
-  const renderStructuredData = React.useMemo(() =>
-    createRenderStructuredData(isSavingCampaign, handleCreateEvent, handleOpenCampaign),
-    [isSavingCampaign, handleCreateEvent, handleOpenCampaign]
-  );
+      // Store the campaign ID to auto-load it
+      if (result.campaignId) {
+        sessionStorage.setItem('autoLoadCampaignId', result.campaignId);
+      }
+
+      // Close the AI Assistant panel
+      closeChatbot();
+
+      // Navigate to the home page where the campaign editor is
+      router.push('/');
+    } catch (error) {
+      console.error('Failed to create campaign:', error);
+      alert(`Failed to create campaign: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    } finally {
+      setIsSavingCampaign(false);
+    }
+  };
+
+  // Create event without generating AI content - just save structure to calendar
+  const handleCreateEvent = async (campaignData: CampaignData) => {
+    if (!brandId || !campaignData) return;
+
+    setIsSavingCampaign(true);
+
+    try {
+      // Call the new create-campaign API (no AI generation)
+      const response = await fetch('/api/create-campaign', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          prompt: campaignData.prompt,
+          brandId,
+          characterConsistency: (campaignData as any).characterConsistency,
+        }),
+      });
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.error || 'Failed to create campaign');
+      }
+
+      const createdCampaign: CampaignData & { contentGenerated: boolean } = await response.json();
+
+      console.log('[Frontend] Campaign created (without AI content):', {
+        campaignId: createdCampaign.campaignId,
+        campaignName: createdCampaign.campaignName,
+        totalDays: createdCampaign.campaignDays?.length || 0,
+        contentGenerated: createdCampaign.contentGenerated,
+      });
+
+      if (!createdCampaign.campaignId) {
+        throw new Error('Campaign was not saved properly');
+      }
+
+      // Close the AI Assistant panel
+      closeChatbot();
+
+      // Store campaign ID in sessionStorage for auto-load and trigger page refresh
+      if (typeof window !== 'undefined') {
+        sessionStorage.setItem('autoLoadCampaignId', createdCampaign.campaignId);
+        window.location.href = '/';
+      }
+    } catch (error) {
+      console.error('Failed to create campaign:', error);
+
+      toast({
+        variant: 'destructive',
+        title: 'Event Creation Failed',
+        description: error instanceof Error ? error.message : 'Unknown error occurred',
+      });
+    } finally {
+      setIsSavingCampaign(false);
+    }
+  };
+
+  // Legacy: Generate event with AI content (text + images)
+  const handleGenerateCampaign = async (campaignData: CampaignData) => {
+    if (!brandId || !campaignData) return;
+
+    setIsSavingCampaign(true);
+
+    // Add job to the queue
+    const duration = campaignData.campaignRequest?.duration || 1;
+    const jobId = addJob({
+      type: 'campaign-generation',
+      title: campaignData.campaignName || 'Campaign',
+      description: `${duration} day${duration !== 1 ? 's' : ''} • Generating content with AI`,
+      status: 'running',
+      metadata: {
+        startDate: campaignData.campaignRequest?.startDate,
+        duration,
+      },
+    });
+
+    // Store loading state immediately for calendar to show spinners
+    // Use localStorage for persistence across page refreshes during long generation
+    if (typeof window !== 'undefined') {
+      localStorage.setItem('pendingCampaign', JSON.stringify({
+        startDate: campaignData.campaignRequest?.startDate,
+        duration: campaignData.campaignRequest?.duration || 1,
+        timestamp: Date.now(),
+        jobId, // Link to job queue
+      }));
+    }
+
+    // Close chatbot immediately to show calendar loading state
+    closeChatbot();
+
+    try {
+      // Update progress as we go
+      setProgress(jobId, 10);
+
+      // Call the generation API endpoint
+      const response = await fetch('/api/generate-campaign-content', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          prompt: campaignData.prompt,
+          brandId,
+          // Pass character consistency config if provided
+          characterConsistency: (campaignData as any).characterConsistency,
+        }),
+      });
+
+      setProgress(jobId, 50);
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.error || 'Failed to generate campaign');
+      }
+
+      const generatedCampaign: CampaignData = await response.json();
+
+      setProgress(jobId, 80);
+
+      console.log('[Frontend] Generated campaign received:', {
+        campaignName: generatedCampaign.campaignName,
+        totalDays: generatedCampaign.campaignDays?.length || 0,
+        totalBlocks: generatedCampaign.campaignDays?.reduce((sum, day) => sum + (day.contentBlocks?.length || 0), 0) || 0,
+        firstDay: generatedCampaign.campaignDays?.[0],
+      });
+
+      // Campaign is auto-saved by the API, use the returned campaignId
+      console.log('[Frontend] Using auto-saved campaign:', {
+        campaignId: generatedCampaign.campaignId,
+        campaignName: generatedCampaign.campaignName,
+        totalDays: generatedCampaign.campaignDays?.length || 0,
+        totalBlocks: generatedCampaign.campaignDays?.reduce((sum, day) => sum + (day.contentBlocks?.length || 0), 0) || 0,
+      });
+
+      if (!generatedCampaign.campaignId) {
+        throw new Error('Campaign was generated but not saved properly');
+      }
+
+      // Mark job as completed
+      completeJob(jobId, { resultUrl: '/' });
+
+      // Close the AI Assistant panel
+      closeChatbot();
+
+      // Store campaign ID in sessionStorage for auto-load and trigger page refresh
+      if (typeof window !== 'undefined') {
+        sessionStorage.setItem('autoLoadCampaignId', generatedCampaign.campaignId);
+        localStorage.removeItem('pendingCampaign');
+        sessionStorage.removeItem('pendingCampaign');
+        window.location.href = '/';
+      }
+    } catch (error) {
+      console.error('Failed to generate campaign:', error);
+
+      // Mark job as failed
+      failJob(jobId, error instanceof Error ? error.message : 'Unknown error occurred');
+
+      // Clear pending campaign state on error
+      if (typeof window !== 'undefined') {
+        localStorage.removeItem('pendingCampaign');
+        sessionStorage.removeItem('pendingCampaign');
+      }
+
+      toast({
+        variant: 'destructive',
+        title: 'Event Generation Failed',
+        description: error instanceof Error ? error.message : 'Unknown error occurred',
+      });
+    } finally {
+      setIsSavingCampaign(false);
+    }
+  };
+
+  const isCampaignData = (data: any): data is StructuredData & CampaignData => {
+    if (!data) return false;
+    // For preview data (generate-campaign action), we want to be lenient to ensure the button shows
+    return (data.action === 'generate-campaign' || data.action === 'navigate-to-campaign' || 'campaignName' in data);
+  };
+
+  const renderStructuredData = (data: StructuredData) => {
+    if (!data) return null;
+
+    // Special handling for AI campaign generation
+    if (data.action === 'generate-campaign') {
+      const characterConsistency = (data as any).characterConsistency;
+      const hasCharacterConsistency = characterConsistency?.enabled && characterConsistency?.characters?.length > 0;
+
+      return (
+        <div className="mt-3 space-y-3">
+          <div className="bg-background/50 rounded-lg p-3 border">
+            <h4 className="font-semibold mb-2">Event Creator</h4>
+            <div className="text-sm space-y-1">
+              <p><span className="text-muted-foreground">Name:</span> {(data as any).campaignName}</p>
+              <p><span className="text-muted-foreground">Duration:</span> {(data as any).campaignRequest?.duration || 1} days</p>
+              <p><span className="text-muted-foreground">Start:</span> {(data as any).campaignRequest?.startDate ? parseISODateAsLocal((data as any).campaignRequest.startDate).toLocaleDateString() : 'Today'}</p>
+              <p><span className="text-muted-foreground">Total Posts:</span> {(data as any).totalPosts || ((data as any).campaignDays ? (data as any).campaignDays.reduce((sum: number, day: any) => sum + day.contentBlocks.length, 0) : 'TBD')}</p>
+              {hasCharacterConsistency && (
+                <div className="mt-2 pt-2 border-t border-border/50">
+                  <p className="text-xs font-medium text-primary flex items-center gap-1">
+                    <Sparkles className="w-3 h-3" />
+                    Character Consistency Enabled
+                  </p>
+                  <p className="text-xs text-muted-foreground">
+                    {characterConsistency.characters.length} character sheet(s) • Same characters across all images
+                  </p>
+                </div>
+              )}
+              <p className="text-xs text-muted-foreground mt-2">
+                📅 Creates event on calendar. Generate content later from the editor.
+              </p>
+            </div>
+          </div>
+          {/* Primary: Create Event (no AI generation) */}
+          <Button
+            onClick={() => handleCreateEvent(data as any)}
+            disabled={isSavingCampaign}
+            className="w-full"
+          >
+            {isSavingCampaign ? (
+              <>
+                <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                Creating Event...
+              </>
+            ) : (
+              <>
+                <Calendar className="w-4 h-4 mr-2" />
+                Create Event
+              </>
+            )}
+          </Button>
+        </div>
+      );
+    }
+
+    // Legacy handling for old campaigns (kept for backward compatibility)
+    if (data.action === 'navigate-to-campaign') {
+      return (
+        <div className="mt-3 space-y-3">
+          <div className="bg-background/50 rounded-lg p-3 border">
+            <h4 className="font-semibold mb-2">Event Summary</h4>
+            <div className="text-sm space-y-1">
+              <p><span className="text-muted-foreground">Name:</span> {(data as any).campaignName}</p>
+              <p><span className="text-muted-foreground">Duration:</span> {(data as any).campaignRequest?.duration || 1} days</p>
+              <p><span className="text-muted-foreground">Start:</span> {(data as any).campaignRequest?.startDate ? parseISODateAsLocal((data as any).campaignRequest.startDate).toLocaleDateString() : 'Today'}</p>
+              <p><span className="text-muted-foreground">Posts per day:</span> {(data as any).campaignRequest?.postsPerDay || 'Varies'}</p>
+            </div>
+          </div>
+          <Button
+            onClick={() => handleOpenCampaign(data as any)}
+            disabled={isSavingCampaign}
+            className="w-full"
+          >
+            {isSavingCampaign ? (
+              <>
+                <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                Saving Event...
+              </>
+            ) : (
+              <>
+                <Calendar className="w-4 h-4 mr-2" />
+                Open Event Editor
+              </>
+            )}
+          </Button>
+        </div>
+      );
+    }
+
+    return (
+      <div className="mt-3 space-y-2 bg-background/50 rounded-lg p-3 border">
+        {Object.entries(data).map(([key, value]) => {
+          if (Array.isArray(value)) {
+            return (
+              <div key={key}>
+                <p className="font-medium text-xs uppercase tracking-wide text-muted-foreground mb-1">{key}</p>
+                <ul className="list-disc list-inside space-y-1">
+                  {value.map((item, i) => (
+                    <li key={i} className="text-sm">{typeof item === 'object' ? JSON.stringify(item) : String(item)}</li>
+                  ))}
+                </ul>
+              </div>
+            );
+          } else if (typeof value === 'object' && value !== null) {
+            return (
+              <div key={key}>
+                <p className="font-medium text-xs uppercase tracking-wide text-muted-foreground mb-1">{key}</p>
+                <div className="ml-3 space-y-1">
+                  {Object.entries(value).map(([k, v]) => (
+                    <p key={k} className="text-sm"><span className="font-medium">{k}:</span> {String(v)}</p>
+                  ))}
+                </div>
+              </div>
+            );
+          } else {
+            return (
+              <div key={key}>
+                <p className="text-sm"><span className="font-medium text-muted-foreground">{key}:</span> {String(value)}</p>
+              </div>
+            );
+          }
+        })}
+      </div>
+    );
+  };
 
   const currentExamples = examplePrompts[selectedCategory];
   const currentModes = selectedCategory === 'ai-models' ? aiModelsInfo : teamToolsInfo;

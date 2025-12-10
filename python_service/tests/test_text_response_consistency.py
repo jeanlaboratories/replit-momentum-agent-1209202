@@ -88,10 +88,11 @@ class TestTeamToolsTextResponseConsistency(TestTextResponseConsistency):
 
         # Count occurrences of content field in success responses
         content_count = source.count('"content":')
-        # We expect at least 6 content fields (suggest_domain_names, create_team_strategy,
-        # plan_website, search_team_media success/no results, find_similar_media success/no results)
-        self.assertGreaterEqual(content_count, 6,
-                               f"team_tools should have at least 6 'content' fields, found {content_count}")
+        # We expect at least 8 content fields (suggest_domain_names, create_team_strategy,
+        # plan_website, search_team_media success/no results, find_similar_media success/no results,
+        # generate_music success/error, search_youtube_videos)
+        self.assertGreaterEqual(content_count, 8,
+                               f"team_tools should have at least 8 'content' fields, found {content_count}")
 
     def test_search_team_media_has_content_field(self):
         """Verify search_team_media returns content field."""
@@ -115,6 +116,31 @@ class TestTeamToolsTextResponseConsistency(TestTextResponseConsistency):
         # The function uses summary_text and no_results_text variables
         self.assertIn('summary_text = f"Found {len(formatted_results)} similar media items."', source,
                      "find_similar_media should define summary_text")
+
+    def test_generate_music_has_content_field(self):
+        """Verify generate_music returns content field."""
+        team_tools_path = os.path.join(os.path.dirname(__file__), '..', 'tools', 'team_tools.py')
+        with open(team_tools_path, 'r') as f:
+            source = f.read()
+
+        # Check for content field in generate_music success responses
+        self.assertIn('"content": summary_text + media_markers', source,
+                     "generate_music should include 'content' field with music markers")
+        # Check for message field for backward compatibility
+        self.assertIn('"message": summary_text', source,
+                     "generate_music should include 'message' field for backward compatibility")
+
+    def test_generate_music_has_music_url_markers(self):
+        """Verify generate_music returns music URL markers for chat display."""
+        team_tools_path = os.path.join(os.path.dirname(__file__), '..', 'tools', 'team_tools.py')
+        with open(team_tools_path, 'r') as f:
+            source = f.read()
+
+        # Check for music URL markers
+        self.assertIn('__MUSIC_URL__', source,
+                     "generate_music should use __MUSIC_URL__ markers")
+        self.assertIn('media_markers += f"\\n__MUSIC_URL__{url}__MUSIC_URL__"', source,
+                     "generate_music should format music URL markers correctly")
 
 
 class TestRagToolsTextResponseConsistency(TestTextResponseConsistency):
@@ -276,7 +302,7 @@ class TestBackwardCompatibility(unittest.TestCase):
 
         # Count message field occurrences
         message_count = source.count('"message":')
-        self.assertGreaterEqual(message_count, 6,
+        self.assertGreaterEqual(message_count, 8,
                                "team_tools should preserve 'message' field for backward compatibility")
 
     def test_rag_tools_answer_field_preserved(self):

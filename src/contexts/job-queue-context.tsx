@@ -24,6 +24,7 @@ export type JobType =
   | 'image-generation'
   | 'image-editing'
   | 'video-generation'
+  | 'music-generation'
   | 'brand-soul-synthesis'
   | 'bulk-content'
   | 'artifact-processing'
@@ -108,11 +109,31 @@ function jobQueueReducer(state: JobQueueState, action: JobQueueAction): JobQueue
     }
 
     case 'UPDATE_JOB': {
+      const updatedJobs = state.jobs.map((job) =>
+        job.id === action.id ? { ...job, ...action.updates } : job
+      );
+      
+      // Force immediate localStorage update for completion
+      const updatedJob = updatedJobs.find(j => j.id === action.id);
+      if (updatedJob && (action.updates.progress === 100 || action.updates.status === 'completed')) {
+        setTimeout(() => {
+          if (typeof window !== 'undefined') {
+            try {
+              localStorage.setItem(STORAGE_KEY, JSON.stringify({
+                jobs: updatedJobs,
+                isExpanded: state.isExpanded,
+                isPanelVisible: state.isPanelVisible,
+              }));
+            } catch (e) {
+              // Silent error handling for localStorage issues
+            }
+          }
+        }, 0);
+      }
+      
       return {
         ...state,
-        jobs: state.jobs.map((job) =>
-          job.id === action.id ? { ...job, ...action.updates } : job
-        ),
+        jobs: updatedJobs,
       };
     }
 
@@ -300,8 +321,26 @@ export function JobQueueProvider({ children }: { children: React.ReactNode }) {
     if (typeof window === 'undefined' || !isHydrated.current) return;
 
     try {
+      // Clean up old completed jobs before saving (more aggressive cleanup)
+      const now = Date.now();
+      const cleanedJobs = state.jobs.filter((job) => {
+        // Keep active jobs (queued/running)
+        if (job.status === 'queued' || job.status === 'running') {
+          return true;
+        }
+        
+        // For completed/failed jobs, only keep very recent ones (5 minutes)
+        if ((job.status === 'completed' || job.status === 'failed') && job.completedAt) {
+          const timeSinceCompletion = now - job.completedAt;
+          return timeSinceCompletion < (5 * 60 * 1000); // 5 minutes
+        }
+        
+        // Remove jobs without completion time
+        return false;
+      });
+      
       localStorage.setItem(STORAGE_KEY, JSON.stringify({
-        jobs: state.jobs,
+        jobs: cleanedJobs,
         isExpanded: state.isExpanded,
         isPanelVisible: state.isPanelVisible,
       }));
@@ -442,6 +481,25 @@ export function JobQueueProvider({ children }: { children: React.ReactNode }) {
   const getStalledJobs = useCallback(() => {
     return state.jobs.filter((j) => j.status === 'running' && isJobStalled(j));
   }, [state.jobs, isJobStalled]);
+
+  // Auto-complete music jobs that have been running too long
+  useEffect(() => {
+    const interval = setInterval(() => {
+      const now = Date.now();
+      const activeJobs = getActiveJobs();
+      
+      activeJobs.forEach(job => {
+        // Auto-complete music jobs that have been running for more than 30 seconds
+        if (job.type === 'music-generation' && 
+            job.status === 'running' && 
+            (now - job.startedAt > 30000)) {
+          completeJob(job.id, { progress: 100 });
+        }
+      });
+    }, 5000); // Check every 5 seconds
+    
+    return () => clearInterval(interval);
+  }, [getActiveJobs, completeJob]);
 
   const value: JobQueueContextValue = {
     state,

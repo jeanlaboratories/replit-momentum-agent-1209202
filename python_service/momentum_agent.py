@@ -65,7 +65,7 @@ from utils.context_utils import (
     set_brand_context, set_user_context, set_settings_context, set_media_context, set_team_context,
     get_brand_context, get_user_context, get_settings_context, get_media_context, get_team_context
 )
-from tools.team_tools import suggest_domain_names, create_team_strategy, plan_website, create_event, search_team_media, find_similar_media, search_youtube_videos
+from tools.team_tools import suggest_domain_names, create_team_strategy, plan_website, create_event, search_team_media, find_similar_media, search_youtube_videos, generate_music
 from tools.media_tools import generate_image, analyze_image, generate_video, nano_banana, set_genai_client as set_media_genai_client
 from tools.rag_tools import query_brand_documents, index_brand_document
 from tools.media_search_tools import search_media_library, search_images, search_videos
@@ -1231,8 +1231,9 @@ Format your response as a well-organized summary of the search findings.""",
         search_team_media,  # Team tool for multimodal media search
         find_similar_media,  # Find similar media items
         search_youtube_videos,  # Team tool for searching YouTube and saving to media library
+        generate_music,  # Team tool for generating music with Lyria 2
     ]
-    logger.info(f"Agent tools configured: {len(tools_list)} tools (including analyze_image for vision, using multi-agent search with google_search, media search tools: search_media_library, search_images, search_videos, search_youtube_videos)")
+    logger.info(f"Agent tools configured: {len(tools_list)} tools (including analyze_image for vision, using multi-agent search with google_search, media search tools: search_media_library, search_images, search_videos, search_youtube_videos, generate_music)")
 
     agent = Agent(
         model=model_name,
@@ -1265,6 +1266,7 @@ You have access to advanced AI tools and team capabilities:
 - design_logo_concepts: Logo and visual identity concepts
 - create_event: Generate team events/campaigns with AI content
 - search_youtube_videos: Search YouTube for videos and save them to the media library. CRITICAL: When users ask to "find", "search for", "look for", or "show me" videos (especially when they mention YouTube or want to find videos online), you MUST use search_youtube_videos, NOT search_videos. search_videos searches the media library, while search_youtube_videos searches YouTube. The tool returns video metadata and URLs that can be saved to the media library.
+- generate_music: Generate music using Google's Lyria 2 model. USE THIS TOOL when users ask to "generate music", "create music", "make music", "compose music", or "create a soundtrack". Music is automatically saved to both the Music Gallery and Media Library. Examples: "Generate upbeat electronic music", "Create calm ambient music for meditation", "Make a rock song for our campaign".
 
 🍌 Special:
 - nano_banana: Edit uploaded images with AI (use when user wants to modify/edit/change an uploaded image)

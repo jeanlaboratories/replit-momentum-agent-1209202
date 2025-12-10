@@ -16,6 +16,7 @@ export interface AIModelSettings {
   imageModel: string;
   imageEditModel: string;
   videoModel: string;
+  musicModel: string;
 }
 
 // Available model choices for the AI Model Configuration UI
@@ -50,6 +51,9 @@ export const AVAILABLE_MODELS = {
     { id: 'veo-3.0-fast-generate-001', name: 'Veo 3.0 Fast' },
     { id: 'veo-2.0-generate-001', name: 'Veo 2.0' },
   ],
+  music: [
+    { id: 'lyria-002', name: 'Lyria 2 (Standard)' },
+  ],
 } as const;
 
 // Default model settings - these are the defaults used when no user preference is set
@@ -68,4 +72,5 @@ export const DEFAULT_SETTINGS: AIModelSettings = {
   imageModel: 'imagen-4.0-generate-001',
   imageEditModel: 'gemini-3-pro-image-preview',
   videoModel: 'veo-3.1-generate-preview',
+  musicModel: 'lyria-002',
 };

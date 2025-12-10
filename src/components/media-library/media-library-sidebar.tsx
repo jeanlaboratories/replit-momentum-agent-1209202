@@ -1,6 +1,6 @@
 import * as React from 'react';
 import { useRouter } from 'next/navigation';
-import { Folder, Image, Video, Tag, Calendar, User, Sparkles, Upload, Edit, Plus, LayoutGrid, Film, ChevronDown, Eye, EyeOff } from 'lucide-react';
+import { Folder, Image, Video, Tag, Calendar, User, Sparkles, Upload, Edit, Plus, LayoutGrid, Film, Music2, ChevronDown, Eye, EyeOff } from 'lucide-react';
 import {
   Collapsible,
   CollapsibleContent,
@@ -461,6 +461,12 @@ export function MediaLibrarySidebar({
                 <SidebarMenuButton onClick={() => router.push('/videos')}>
                   <Film className="h-4 w-4" />
                   <span>Video Gallery</span>
+                </SidebarMenuButton>
+              </SidebarMenuItem>
+              <SidebarMenuItem>
+                <SidebarMenuButton onClick={() => router.push('/music')}>
+                  <Music2 className="h-4 w-4" />
+                  <span>Music Gallery</span>
                 </SidebarMenuButton>
               </SidebarMenuItem>
             </SidebarMenu>
