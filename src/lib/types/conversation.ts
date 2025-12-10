@@ -113,11 +113,47 @@ export function generateConversationTitle(firstMessage: string): string {
 
 /**
  * Generate a preview from the first message
+ * Creates full, complete sentences that wrap properly
  */
 export function generateConversationPreview(firstMessage: string): string {
-  const cleaned = firstMessage.trim().replace(/\n/g, ' ');
-  if (cleaned.length <= 100) {
+  const cleaned = firstMessage.trim().replace(/\n+/g, ' ').replace(/\s+/g, ' ');
+  
+  if (!cleaned) {
+    return 'New conversation';
+  }
+
+  // If the message is short enough, return it as-is (increased to 200 chars for better preview)
+  if (cleaned.length <= 200) {
+    // Ensure it ends with proper punctuation
+    if (!/[.!?]$/.test(cleaned)) {
+      return cleaned + '.';
+    }
     return cleaned;
   }
-  return cleaned.substring(0, 100) + '...';
+
+  // Find the end of the first complete sentence (up to 200 chars for better previews)
+  // Look for sentence-ending punctuation
+  const sentenceEnders = /[.!?]\s+/;
+  const first200 = cleaned.substring(0, 200);
+  const match = first200.match(sentenceEnders);
+  
+  if (match && match.index !== undefined && match.index > 20) {
+    // Found a sentence end within the first 200 chars, use it
+    return cleaned.substring(0, match.index! + 1);
+  }
+
+  // If no sentence end found, find the last space before 200 chars
+  const lastSpace = first200.lastIndexOf(' ');
+  if (lastSpace > 100) {
+    // Found a good break point, ensure it's a complete thought
+    const truncated = cleaned.substring(0, lastSpace);
+    // Add ellipsis only if we're cutting off significant content
+    if (cleaned.length > lastSpace + 20) {
+      return truncated + '...';
+    }
+    return truncated + '.';
+  }
+
+  // Fallback: truncate at 200 chars with ellipsis (increased from 120)
+  return cleaned.substring(0, 200) + '...';
 }

@@ -40,6 +40,82 @@ sys.modules['google.auth'] = mock_google_auth
 sys.modules['google.auth.credentials'] = mock_google_auth.credentials
 sys.modules['google.auth.exceptions'] = mock_google_auth.exceptions
 
+# Set up ADK mocks to prevent import errors
+import types
+
+def setup_adk_mocks():
+    """Set up ADK mocks to prevent import errors and test interference."""
+    # Ensure google.adk exists as a proper package
+    if 'google.adk' not in sys.modules or not hasattr(sys.modules.get('google.adk', None), '__path__'):
+        adk_module = types.ModuleType('google.adk')
+        adk_module.__path__ = []
+        sys.modules['google.adk'] = adk_module
+    
+    # Create all necessary ADK submodules
+    adk_submodules = ['agents', 'memory', 'sessions', 'events', 'models', 'runners', 'tools']
+    for submod in adk_submodules:
+        mod_name = f'google.adk.{submod}'
+        if mod_name not in sys.modules or not hasattr(sys.modules.get(mod_name, None), '__path__'):
+            submod_obj = types.ModuleType(mod_name)
+            submod_obj.__path__ = []
+            setattr(sys.modules['google.adk'], submod, submod_obj)
+            sys.modules[mod_name] = submod_obj
+    
+    # Create agent_tool submodule
+    if 'google.adk.tools.agent_tool' not in sys.modules:
+        agent_tool_obj = types.ModuleType('google.adk.tools.agent_tool')
+        sys.modules['google.adk.tools.agent_tool'] = agent_tool_obj
+    
+    # Mock classes for memory service
+    mock_vertex_ai_memory_bank_service = type('VertexAiMemoryBankService', (), {
+        '__init__': lambda self, *args, **kwargs: None,
+        '_get_api_client': lambda self: MagicMock(),
+    })
+    mock_vertex_ai_rag_memory_service = type('VertexAiRagMemoryService', (), {
+        '__init__': lambda self, *args, **kwargs: None,
+        '_get_api_client': lambda self: MagicMock(),
+    })
+    sys.modules['google.adk.memory'].VertexAiMemoryBankService = mock_vertex_ai_memory_bank_service
+    sys.modules['google.adk.memory'].VertexAiRagMemoryService = mock_vertex_ai_rag_memory_service
+    
+    # Mock Agent and LlmAgent
+    def mock_agent_init(self, *args, **kwargs):
+        self.tools = kwargs.get('tools', [])
+        self.instruction = kwargs.get('instruction', '')
+        self.model = kwargs.get('model', 'gemini-2.0-flash')
+    mock_agent = type('Agent', (), {'__init__': mock_agent_init})
+    mock_llm_agent = type('LlmAgent', (), {'__init__': mock_agent_init})
+    sys.modules['google.adk.agents'].Agent = mock_agent
+    sys.modules['google.adk.agents'].LlmAgent = mock_llm_agent
+    
+    # Mock Runner
+    def mock_runner_init(self, *args, **kwargs):
+        pass
+    mock_runner = type('Runner', (), {'__init__': mock_runner_init})
+    sys.modules['google.adk.runners'].Runner = mock_runner
+    
+    # Mock AgentTool
+    def mock_agent_tool_init(self, *args, **kwargs):
+        pass
+    mock_agent_tool = type('AgentTool', (), {'__init__': mock_agent_tool_init})
+    sys.modules['google.adk.tools'].AgentTool = mock_agent_tool
+    sys.modules['google.adk.tools.agent_tool'].AgentTool = mock_agent_tool
+    
+    # Mock google_search
+    mock_google_search = MagicMock()
+    sys.modules['google.adk.tools'].google_search = mock_google_search
+    
+    # Mock SessionService
+    def mock_session_service_init(self, *args, **kwargs):
+        pass
+    mock_session_service = type('SessionService', (), {'__init__': mock_session_service_init})
+    mock_inmemory_session_service = type('InMemorySessionService', (), {'__init__': mock_session_service_init})
+    sys.modules['google.adk.sessions'].SessionService = mock_session_service
+    sys.modules['google.adk.sessions'].InMemorySessionService = mock_inmemory_session_service
+
+# Set up ADK mocks before imports
+setup_adk_mocks()
+
 from tools.media_search_tools import search_media_library, search_images, search_videos
 from services.media_search_service import MediaSearchService
 

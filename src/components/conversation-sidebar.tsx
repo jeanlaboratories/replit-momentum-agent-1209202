@@ -265,8 +265,8 @@ export function ConversationSidebar({
       </div>
 
       {/* Conversations List */}
-      <ScrollArea className="flex-1">
-        <div className="p-3 space-y-1">
+      <ScrollArea className="flex-1" style={{ minWidth: 0 }}>
+        <div className="p-3 space-y-1" style={{ minWidth: 0, width: '100%' }}>
           {isLoading ? (
             <div className="flex items-center justify-center py-8">
               <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
@@ -280,11 +280,12 @@ export function ConversationSidebar({
               <div
                 key={conv.id}
                 className={cn(
-                  'group flex flex-col rounded-md transition-colors overflow-hidden min-w-0',
+                  'group flex flex-col rounded-md transition-colors w-full',
                   currentConversationId === conv.id
                     ? 'bg-primary/10'
                     : 'hover:bg-accent'
                 )}
+                style={{ minWidth: 0, maxWidth: '100%' }}
               >
                 {editingId === conv.id ? (
                   <div className="flex items-center gap-1 p-2">
@@ -319,17 +320,33 @@ export function ConversationSidebar({
                   <>
                     <button
                       onClick={() => handleSelectConversation(conv.id)}
-                      className="flex flex-col items-start px-3 py-2 text-left w-full overflow-hidden"
+                      className="flex flex-col items-start px-3 py-2 text-left w-full"
+                      style={{ minWidth: 0, maxWidth: '100%' }}
                     >
-                      <span className="text-sm font-medium truncate w-full">
+                      <span className="text-sm font-medium truncate w-full block" style={{ minWidth: 0 }}>
                         {conv.title}
                       </span>
                       {conv.preview && (
-                        <span className="text-xs text-muted-foreground truncate w-full">
+                        <span 
+                          className="text-xs text-muted-foreground mt-0.5 leading-relaxed"
+                          style={{
+                            display: '-webkit-box',
+                            WebkitLineClamp: 4,
+                            WebkitBoxOrient: 'vertical',
+                            overflow: 'hidden',
+                            wordBreak: 'break-word',
+                            overflowWrap: 'break-word',
+                            hyphens: 'auto',
+                            width: '100%',
+                            minWidth: 0,
+                            maxWidth: '100%',
+                            whiteSpace: 'normal',
+                          }}
+                        >
                           {conv.preview}
                         </span>
                       )}
-                      <span className="text-xs text-muted-foreground mt-1">
+                      <span className="text-xs text-muted-foreground mt-1 block" style={{ minWidth: 0 }}>
                         {formatRelativeTime(conv.updatedAt)}
                         {conv.messageCount > 0 && ` • ${conv.messageCount} msgs`}
                       </span>

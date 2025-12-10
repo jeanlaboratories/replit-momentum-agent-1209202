@@ -16,6 +16,32 @@ import json
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # Mock Firebase and Google Cloud imports before importing our code
+# CRITICAL: Mock google.oauth2 BEFORE firebase_admin to prevent metaclass conflicts
+import types
+
+# Mock google.oauth2 before firebase_admin tries to import it
+if 'google' not in sys.modules:
+    sys.modules['google'] = types.ModuleType('google')
+
+if 'google.oauth2' not in sys.modules:
+    oauth2_module = types.ModuleType('google.oauth2')
+    sys.modules['google.oauth2'] = oauth2_module
+
+# Create a mock credentials module that firebase_admin will try to import
+if 'google.oauth2.credentials' not in sys.modules:
+    credentials_module = types.ModuleType('google.oauth2.credentials')
+    # Create mock classes to prevent metaclass conflicts
+    class MockReadOnlyScoped:
+        pass
+    class MockCredentialsWithQuotaProject:
+        pass
+    class MockCredentials(MockReadOnlyScoped, MockCredentialsWithQuotaProject):
+        pass
+    credentials_module.ReadOnlyScoped = MockReadOnlyScoped
+    credentials_module.CredentialsWithQuotaProject = MockCredentialsWithQuotaProject
+    credentials_module.Credentials = MockCredentials
+    sys.modules['google.oauth2.credentials'] = credentials_module
+
 mock_firestore = MagicMock()
 mock_discoveryengine = MagicMock()
 mock_datastore_client = MagicMock()
@@ -26,6 +52,80 @@ sys.modules['google.cloud'] = MagicMock()
 sys.modules['google.cloud.discoveryengine_v1'] = mock_discoveryengine
 sys.modules['google.api_core'] = MagicMock()
 sys.modules['google.api_core.exceptions'] = MagicMock()
+
+# Mock ADK to prevent import errors
+import types
+def setup_adk_mocks():
+    """Set up ADK mocks to prevent import errors."""
+    # Ensure google module exists as a package
+    if 'google' not in sys.modules or not hasattr(sys.modules.get('google', None), '__path__'):
+        sys.modules['google'] = types.ModuleType('google')
+    
+    # Create google.adk as a proper package (always re-setup to handle test interference)
+    if 'google.adk' not in sys.modules or not hasattr(sys.modules.get('google.adk', None), '__path__'):
+        adk_module = types.ModuleType('google.adk')
+        adk_module.__path__ = []
+        sys.modules['google.adk'] = adk_module
+    
+    # Create all necessary ADK submodules (always re-setup to handle test interference)
+    adk_submodules = ['agents', 'memory', 'sessions', 'events', 'models', 'runners', 'tools']
+    for submod in adk_submodules:
+        mod_name = f'google.adk.{submod}'
+        if mod_name not in sys.modules or not hasattr(sys.modules.get(mod_name, None), '__path__'):
+            submod_obj = types.ModuleType(mod_name)
+            submod_obj.__path__ = []
+            setattr(sys.modules['google.adk'], submod, submod_obj)
+            sys.modules[mod_name] = submod_obj
+    
+    # Create agent_tool submodule
+    if 'google.adk.tools.agent_tool' not in sys.modules:
+        agent_tool_obj = types.ModuleType('google.adk.tools.agent_tool')
+        sys.modules['google.adk.tools.agent_tool'] = agent_tool_obj
+    
+    # Mock classes
+    mock_vertex_ai_memory_bank_service = type('VertexAiMemoryBankService', (), {
+        '__init__': lambda self, *args, **kwargs: None,
+        '_get_api_client': lambda self: MagicMock(),
+    })
+    mock_vertex_ai_rag_memory_service = type('VertexAiRagMemoryService', (), {
+        '__init__': lambda self, *args, **kwargs: None,
+        '_get_api_client': lambda self: MagicMock(),
+    })
+    sys.modules['google.adk.memory'].VertexAiMemoryBankService = mock_vertex_ai_memory_bank_service
+    sys.modules['google.adk.memory'].VertexAiRagMemoryService = mock_vertex_ai_rag_memory_service
+    
+    def mock_agent_init(self, *args, **kwargs):
+        self.tools = kwargs.get('tools', [])
+        self.instruction = kwargs.get('instruction', '')
+        self.model = kwargs.get('model', 'gemini-2.0-flash')
+    mock_agent = type('Agent', (), {'__init__': mock_agent_init})
+    mock_llm_agent = type('LlmAgent', (), {'__init__': mock_agent_init})
+    sys.modules['google.adk.agents'].Agent = mock_agent
+    sys.modules['google.adk.agents'].LlmAgent = mock_llm_agent
+    
+    def mock_runner_init(self, *args, **kwargs):
+        pass
+    mock_runner = type('Runner', (), {'__init__': mock_runner_init})
+    sys.modules['google.adk.runners'].Runner = mock_runner
+    
+    def mock_agent_tool_init(self, *args, **kwargs):
+        pass
+    mock_agent_tool = type('AgentTool', (), {'__init__': mock_agent_tool_init})
+    sys.modules['google.adk.tools'].AgentTool = mock_agent_tool
+    sys.modules['google.adk.tools.agent_tool'].AgentTool = mock_agent_tool
+    
+    mock_google_search = MagicMock()
+    sys.modules['google.adk.tools'].google_search = mock_google_search
+    
+    def mock_session_service_init(self, *args, **kwargs):
+        pass
+    mock_session_service = type('SessionService', (), {'__init__': mock_session_service_init})
+    mock_inmemory_session_service = type('InMemorySessionService', (), {'__init__': mock_session_service_init})
+    sys.modules['google.adk.sessions'].SessionService = mock_session_service
+    sys.modules['google.adk.sessions'].InMemorySessionService = mock_inmemory_session_service
+
+# Set up ADK mocks before any imports
+setup_adk_mocks()
 
 # Mock the settings and other dependencies
 with patch('config.get_settings') as mock_get_settings, \
@@ -53,7 +153,8 @@ class TestSearchSettingsService:
         self.mock_media_search_service = Mock()
         
         # Setup the service with mocked dependencies
-        with patch('firebase_admin.firestore.client', return_value=self.mock_db), \
+        # Use patch.object to avoid triggering firebase_admin import
+        with patch.object(mock_firestore, 'client', return_value=self.mock_db), \
              patch('services.media_search_service.get_media_search_service', 
                    return_value=self.mock_media_search_service):
             self.service = SearchSettingsService()

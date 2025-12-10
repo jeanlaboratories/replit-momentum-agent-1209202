@@ -3,11 +3,26 @@ import logging
 import json
 from typing import Optional, Dict, Any, List
 from firebase_admin import firestore
-from google.adk.memory import VertexAiMemoryBankService
 from google.cloud import aiplatform_v1beta1 as aiplatform
 from utils.model_defaults import DEFAULT_TEXT_MODEL
 
 logger = logging.getLogger(__name__)
+
+# Import VertexAiMemoryBankService - handle both old and new ADK versions
+# This needs to be done at module level but handle import errors gracefully
+VertexAiMemoryBankService = None
+try:
+    from google.adk.memory import VertexAiMemoryBankService
+except (ImportError, AttributeError):
+    # Fallback: try VertexAiRagMemoryService (newer ADK versions)
+    try:
+        from google.adk.memory import VertexAiRagMemoryService
+        VertexAiMemoryBankService = VertexAiRagMemoryService
+        logger.info("Using VertexAiRagMemoryService as VertexAiMemoryBankService (ADK version compatibility)")
+    except (ImportError, AttributeError):
+        # If neither is available, create a placeholder that will fail gracefully
+        # This can happen during test runs when modules are mocked
+        logger.debug("VertexAiMemoryBankService not available in google.adk.memory (may be mocked in tests)")
 
 # Global genai_client will be set by momentum_agent or other modules
 genai_client = None
@@ -148,77 +163,118 @@ async def save_conversation_to_memory(
         location = os.getenv('MOMENTUM_AGENT_ENGINE_LOCATION', 'us-central1')
 
         if project_id and agent_engine_id:
-            adk_memory_service = VertexAiMemoryBankService(
-                project=project_id,
-                location=location,
-                agent_engine_id=agent_engine_id)
+            try:
+                # Use vertexai.Client (same as ADK notebook) instead of ReasoningEngineServiceClient
+                # This provides the correct agent_engines.memories.generate() API
+                import vertexai
+                
+                logger.info(f"Initializing vertexai for memory save: project={project_id}, location={location}, engine_id={agent_engine_id}")
+                
+                # Initialize vertexai client (same as ADK notebook)
+                vertexai.init(project=project_id, location=location)
+                client = vertexai.Client(project=project_id, location=location)
+                
+                logger.info(f"Created vertexai.Client: type={type(client).__name__}, has agent_engines={hasattr(client, 'agent_engines')}")
+                
+                agent_engine_name = f"projects/{project_id}/locations/{location}/reasoningEngines/{agent_engine_id}"
 
-            # If we have pre-extracted facts, use them, otherwise generate from history
-            memories_to_save = []
-            if pre_extracted_facts:
-                memories_to_save = pre_extracted_facts
-            elif adk_events:
-                # Extract from ADK events if available
-                for event in adk_events:
-                    if 'text' in event:
-                        memories_to_save.append(event['text'])
-            else:
-                # Fallback to extraction
-                memories_to_save = extract_memories_from_conversation(
-                    chat_history)
+                # If we have pre-extracted facts, use them, otherwise generate from history
+                memories_to_save = []
+                if pre_extracted_facts:
+                    memories_to_save = pre_extracted_facts
+                elif adk_events:
+                    # Extract from ADK events if available
+                    for event in adk_events:
+                        if 'text' in event:
+                            memories_to_save.append(event['text'])
+                        elif 'content' in event and isinstance(event['content'], dict):
+                            # Extract text from content parts
+                            parts = event['content'].get('parts', [])
+                            for part in parts:
+                                if isinstance(part, dict) and 'text' in part:
+                                    memories_to_save.append(part['text'])
+                else:
+                    # Fallback to extraction
+                    memories_to_save = extract_memories_from_conversation(
+                        chat_history)
 
-            for memory_text in memories_to_save:
-                try:
-                    # ADK memory service uses the new API format
-                    client = adk_memory_service._get_api_client()
+                for memory_text in memories_to_save:
+                    try:
+                        logger.info(f"Attempting to save memory to Vertex AI: engine={agent_engine_name}, memory_text='{memory_text[:50]}...'")
+                        
+                        # Use memories.generate API with events (same format as ADK notebook)
+                        events_data = [{
+                            'content': {
+                                'role': 'user',
+                                'parts': [{'text': memory_text}]
+                            }
+                        }]
+                        
+                        logger.info(f"Calling client.agent_engines.memories.generate() with name={agent_engine_name}")
+                        operation = client.agent_engines.memories.generate(
+                            name=agent_engine_name,
+                            direct_contents_source={'events': events_data},
+                            scope={
+                                'app_name': "MOMENTUM",
+                                'user_id': user_id
+                            },
+                            config={'wait_for_completion': True}
+                        )
+                        
+                        logger.info(f"Memory generate operation completed: type={type(operation).__name__}")
 
-                    # Agent engine name format for the new API
-                    agent_engine_name = f"projects/{project_id}/locations/{location}/reasoningEngines/{agent_engine_id}"
+                        # Get the created memory ID from response if possible
+                        adk_memory_id = None
+                        if hasattr(operation, 'name'):
+                            adk_memory_id = operation.name
+                        elif hasattr(operation, 'response') and operation.response:
+                            if hasattr(operation.response, 'name'):
+                                adk_memory_id = operation.response.name
 
-                    # Use the new API format: memories.create(name=..., fact=..., scope=...)
-                    # The 'name' parameter is the agent engine resource name
-                    # The 'fact' parameter is the memory text
-                    # The 'scope' parameter identifies the user
-                    operation = client.agent_engines.memories.create(
-                        name=agent_engine_name,
-                        fact=memory_text,
-                        scope={"user_id": user_id})
+                        # Save to Firestore as well for listing/management
+                        # This is important for the fallback and listing logic
+                        # Use adk_memory_id as document ID if available for easier deletion
+                        # Otherwise use auto-generated ID
+                        memories_col = db.collection('users').document(
+                            user_id).collection('memories')
+                        
+                        if adk_memory_id:
+                            # Extract short memory ID from full path for use as document ID
+                            # Format: projects/.../reasoningEngines/.../memories/{short_id}
+                            short_memory_id = adk_memory_id.split('/')[-1] if '/' in adk_memory_id else adk_memory_id
+                            memories_col.document(short_memory_id).set({
+                                'content': memory_text,
+                                'createdAt': firestore.SERVER_TIMESTAMP,
+                                'updatedAt': firestore.SERVER_TIMESTAMP,
+                                'adkMemoryId': adk_memory_id
+                            })
+                            logger.info(f"Saved memory to Firestore with ID {short_memory_id} (from adk_memory_id)")
+                        else:
+                            # Fallback to auto-generated ID if no adk_memory_id
+                            memories_col.add({
+                                'content': memory_text,
+                                'createdAt': firestore.SERVER_TIMESTAMP,
+                                'updatedAt': firestore.SERVER_TIMESTAMP,
+                                'adkMemoryId': adk_memory_id
+                            })
 
-                    # Get the created memory ID from response if possible
-                    adk_memory_id = None
-                    if hasattr(operation, 'name'):
-                        adk_memory_id = operation.name
-                    elif hasattr(operation, 'response') and operation.response:
-                        if hasattr(operation.response, 'name'):
-                            adk_memory_id = operation.response.name
-                        elif hasattr(operation.response,
-                                     'memory') and operation.response.memory:
-                            adk_memory_id = operation.response.memory.name
-
-                    # Save to Firestore as well for listing/management
-                    # This is important for the fallback and listing logic
-                    memory_ref = db.collection('users').document(
-                        user_id).collection('memories').add({
-                            'content':
-                            memory_text,
-                            'createdAt':
-                            firestore.SERVER_TIMESTAMP,
-                            'updatedAt':
-                            firestore.SERVER_TIMESTAMP,
-                            'adkMemoryId':
-                            adk_memory_id
-                        })
-
-                except Exception as e:
-                    logger.error(f"Error saving memory to ADK: {e}")
-                    # Fallback to Firestore only
-                    db.collection('users').document(user_id).collection(
-                        'memories').add({
-                            'content': memory_text,
-                            'createdAt': firestore.SERVER_TIMESTAMP,
-                            'updatedAt': firestore.SERVER_TIMESTAMP
-                        })
-            return  # Done with ADK path
+                    except Exception as e:
+                        logger.error(f"Error saving memory to ADK: {e}")
+                        import traceback
+                        logger.error(traceback.format_exc())
+                        # Fallback to Firestore only
+                        db.collection('users').document(user_id).collection(
+                            'memories').add({
+                                'content': memory_text,
+                                'createdAt': firestore.SERVER_TIMESTAMP,
+                                'updatedAt': firestore.SERVER_TIMESTAMP
+                            })
+                return  # Done with ADK path
+            except Exception as e:
+                logger.error(f"Error initializing or using ADK memory service: {e}")
+                import traceback
+                logger.error(traceback.format_exc())
+                # Fall through to Firestore-only storage
 
     # Fallback to InMemoryMemoryService (Global)
     if not chat_history:

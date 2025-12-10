@@ -506,6 +506,37 @@ async def analyze_youtube_video_endpoint(request: Request):
         logger.error(f"Error in youtube analysis endpoint: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+@router.post("/youtube-search")
+async def search_youtube_videos_endpoint(request: Request):
+    """
+    Directly search YouTube for videos.
+    """
+    try:
+        data = await request.json()
+        query = data.get("query")
+        brand_id = data.get("brand_id")
+        max_results = data.get("max_results", 10)
+        
+        if not query:
+            raise HTTPException(status_code=400, detail="Query is required")
+        
+        # Set context for tool calls
+        from utils.context_utils import set_brand_context
+        if brand_id:
+            set_brand_context(brand_id)
+        
+        # Import and call the tool directly
+        from tools.team_tools import search_youtube_videos
+        result = search_youtube_videos(
+            query=query,
+            max_results=max_results
+        )
+        
+        return result
+    except Exception as e:
+        logger.error(f"Error in youtube search endpoint: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 @router.post("/search")
 async def search_web_endpoint(request: Request):
     """

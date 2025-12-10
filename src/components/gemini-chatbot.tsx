@@ -5,7 +5,7 @@ import { useRouter } from 'next/navigation';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import { Card } from '@/components/ui/card';
-import { Loader2, Send, Sparkles, User, Image as ImageIcon, Video, X, Upload, Lightbulb, TrendingUp, Globe, Palette, Calendar, FileText, Music, MoreVertical, Trash2, Info, History, Edit2, Check, XCircle, ExternalLink, Search, Brain, Wand2, Link, Database, FolderSearch, Images, MessageSquare } from 'lucide-react';
+import { Loader2, Send, Sparkles, User, Image as ImageIcon, Video, X, Upload, Lightbulb, TrendingUp, Globe, Palette, Calendar, FileText, Music, MoreVertical, Trash2, Info, History, Edit2, Check, XCircle, ExternalLink, Search, Brain, Wand2, Link, Database, FolderSearch, Images, MessageSquare, Square } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
@@ -86,7 +86,7 @@ type ModeCategory = 'agent' | 'ai-models' | 'team-tools';
 
 type AgentMode = 'agent';
 type AIModel = 'gemini-text' | 'imagen' | 'gemini-vision' | 'veo' | 'nano-banana';
-type TeamTool = 'team-chat' | 'domain-suggestions' | 'website-planning' | 'team-strategy' | 'logo-concepts' | 'event-creator' | 'search' | 'youtube-analysis' | 'crawl-website' | 'memory' | 'rag-search' | 'media-search' | 'media-index';
+type TeamTool = 'team-chat' | 'domain-suggestions' | 'website-planning' | 'team-strategy' | 'logo-concepts' | 'event-creator' | 'search' | 'youtube-analysis' | 'youtube-search' | 'crawl-website' | 'memory' | 'rag-search' | 'media-search' | 'media-index';
 
 type UnifiedMode = AgentMode | AIModel | TeamTool;
 type IconComponent = React.ComponentType<{ className?: string }>;
@@ -238,6 +238,10 @@ export function GeminiChatbot({ brandId, isFullScreen = false }: GeminiChatbotPr
     setSharedInput,
     sharedAttachments,
     setSharedAttachments,
+    sharedThinkingProcess,
+    setSharedThinkingProcess,
+    sharedAbortController,
+    setSharedAbortController,
   } = useGlobalChatbot();
   const { user } = useAuth();
   const { toast } = useToast();
@@ -496,6 +500,18 @@ export function GeminiChatbot({ brandId, isFullScreen = false }: GeminiChatbotPr
           });
 
           setMessages(messagesWithUrls);
+
+          // Restore thinking process from the last assistant message if it exists
+          const lastAssistantMessage = messagesWithUrls
+            .slice()
+            .reverse()
+            .find((msg: any) => msg.role === 'assistant' && msg.thoughts && msg.thoughts.length > 0);
+          
+          if (lastAssistantMessage && lastAssistantMessage.thoughts) {
+            setSharedThinkingProcess(lastAssistantMessage.thoughts);
+          } else {
+            setSharedThinkingProcess([]);
+          }
 
           // Notify user that history was loaded
           toast({
@@ -1103,6 +1119,8 @@ export function GeminiChatbot({ brandId, isFullScreen = false }: GeminiChatbotPr
                         if (event.type === 'log') {
                           // Add to thinking process
                           thinkingProcess.push(event.content);
+                          // Update shared thinking process for closed bubble indicator
+                          setSharedThinkingProcess([...thinkingProcess]);
                           // Update UI to show thinking
                           setMessages((prev) => {
                             const updated = [...prev];
@@ -1463,6 +1481,11 @@ export function GeminiChatbot({ brandId, isFullScreen = false }: GeminiChatbotPr
       name: 'YouTube Analysis',
       description: aiSettings?.youtubeAnalysisModel ? `Model: ${aiSettings.youtubeAnalysisModel}` : 'Analyze YouTube videos',
       icon: Video
+    },
+    'youtube-search': {
+      name: 'YouTube Search',
+      description: 'Search YouTube for videos and save them to media library',
+      icon: Search
     },
     'crawl-website': {
       name: 'Website Crawler',
@@ -1917,18 +1940,52 @@ export function GeminiChatbot({ brandId, isFullScreen = false }: GeminiChatbotPr
         }
       }
 
-      const response = await fetch('/api/chat', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          messages: [...messages, userMessage],
-          mode: selectedMode,
-          media: mediaData,
-          brandId,
-          teamContext: selectedCategory === 'team-tools' ? teamContext : undefined,
-          selectedContext: messages.filter(m => selectedMessageIds.includes(m.id!)),
-        }),
-      });
+      // Create abort controller for canceling generation
+      const abortController = new AbortController();
+      setSharedAbortController(abortController);
+      // Clear thinking process at start
+      setSharedThinkingProcess([]);
+      
+      // Store abort controller reference for cleanup
+      let isAborted = false;
+
+      let response: Response;
+      try {
+        response = await fetch('/api/chat', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            messages: [...messages, userMessage],
+            mode: selectedMode,
+            media: mediaData,
+            brandId,
+            teamContext: selectedCategory === 'team-tools' ? teamContext : undefined,
+            selectedContext: messages.filter(m => selectedMessageIds.includes(m.id!)),
+          }),
+          signal: abortController.signal,
+        });
+      } catch (fetchError: any) {
+        // Handle abort errors from fetch
+        if (fetchError.name === 'AbortError' || abortController.signal.aborted) {
+          isAborted = true;
+          setSharedAbortController(null);
+          setSharedThinkingProcess([]);
+          setIsLoading(false);
+          // Remove the placeholder assistant message
+          setMessages((prev) => prev.slice(0, -1));
+          return; // Exit early, user canceled
+        }
+        throw fetchError; // Re-throw other errors
+      }
+
+      // Check if aborted before processing response
+      if (abortController.signal.aborted || isAborted) {
+        setMessages((prev) => prev.slice(0, -1));
+        setIsLoading(false);
+        setSharedAbortController(null);
+        setSharedThinkingProcess([]);
+        return;
+      }
 
       if (!response.ok) {
         throw new Error('Failed to get response');
@@ -1987,6 +2044,8 @@ export function GeminiChatbot({ brandId, isFullScreen = false }: GeminiChatbotPr
                   if (event.type === 'log') {
                     // Add to thinking process
                     thinkingProcess.push(event.content);
+                    // Update shared thinking process for closed bubble indicator
+                    setSharedThinkingProcess([...thinkingProcess]);
                     // Update UI to show thinking
                     setMessages((prev) => {
                       const updated = [...prev];
@@ -2482,8 +2541,21 @@ export function GeminiChatbot({ brandId, isFullScreen = false }: GeminiChatbotPr
 
       setIsLoading(false);
       setSelectedMessageIds([]); // Clear selection after successful send
-    } catch (error) {
+      // Clear thinking process and abort controller on completion
+      setSharedThinkingProcess([]);
+      setSharedAbortController(null);
+    } catch (error: any) {
       console.error('Error sending message:', error);
+      
+      // Check if error is from abort
+      if (error.name === 'AbortError' || error.message?.includes('aborted')) {
+        // User canceled - don't show error toast, just clean up
+        setSharedThinkingProcess([]);
+        setSharedAbortController(null);
+        setIsLoading(false);
+        return;
+      }
+      
       toast({
         title: "Error",
         description: "Failed to send message",
@@ -2492,6 +2564,9 @@ export function GeminiChatbot({ brandId, isFullScreen = false }: GeminiChatbotPr
       // Remove the placeholder assistant message
       setMessages((prev) => prev.slice(0, -1));
       setIsLoading(false);
+      // Clear thinking process on error
+      setSharedThinkingProcess([]);
+      setSharedAbortController(null);
     }
   };
 
@@ -3649,18 +3724,96 @@ export function GeminiChatbot({ brandId, isFullScreen = false }: GeminiChatbotPr
               }
             }}
           />
-          <Button
-            type="submit"
-            size="icon"
-            disabled={(!input.trim() && attachments.length === 0) || isLoading}
-            className="h-[60px] w-[60px]"
-          >
-            {isLoading ? (
-              <Loader2 className="w-5 h-5 animate-spin" />
-            ) : (
+          {isLoading ? (
+            <>
+              <Button
+                type="button"
+                size="icon"
+                variant="outline"
+                className="h-[60px] w-[60px]"
+                onClick={() => {
+                  // Safely abort and cleanup
+                  const controller = sharedAbortController;
+                  if (controller) {
+                    try {
+                      // Only abort if not already aborted
+                      if (!controller.signal.aborted) {
+                        controller.abort('User canceled generation');
+                      }
+                    } catch (err) {
+                      // Ignore abort errors - signal might already be aborted
+                      console.log('Abort signal already processed');
+                    }
+                  }
+                  
+                  // Always cleanup state
+                  setSharedAbortController(null);
+                  setSharedThinkingProcess([]);
+                  setIsLoading(false);
+                  
+                  toast({
+                    title: "Generation canceled",
+                    description: "The AI response has been stopped.",
+                  });
+                }}
+                title="Cancel generation"
+              >
+                <XCircle className="w-5 h-5 text-destructive" />
+              </Button>
+              <Button
+                type="button"
+                size="icon"
+                variant="destructive"
+                className="h-[60px] w-[60px]"
+                onClick={() => {
+                  // Safely abort and cleanup
+                  const controller = sharedAbortController;
+                  if (controller) {
+                    try {
+                      // Only abort if not already aborted
+                      if (!controller.signal.aborted) {
+                        controller.abort('User halted generation');
+                      }
+                    } catch (err) {
+                      // Ignore abort errors - signal might already be aborted
+                      console.log('Abort signal already processed');
+                    }
+                  }
+                  
+                  // Always cleanup state
+                  setSharedAbortController(null);
+                  setSharedThinkingProcess([]);
+                  setIsLoading(false);
+                  
+                  // Remove the last assistant message (the one being generated)
+                  setMessages((prev) => {
+                    const lastIndex = prev.length - 1;
+                    if (lastIndex >= 0 && prev[lastIndex].role === 'assistant' && !prev[lastIndex].content) {
+                      return prev.slice(0, lastIndex);
+                    }
+                    return prev;
+                  });
+                  
+                  toast({
+                    title: "Generation halted",
+                    description: "The AI response has been stopped and removed.",
+                  });
+                }}
+                title="Halt and remove"
+              >
+                <X className="w-5 h-5" />
+              </Button>
+            </>
+          ) : (
+            <Button
+              type="submit"
+              size="icon"
+              disabled={(!input.trim() && attachments.length === 0) || isLoading}
+              className="h-[60px] w-[60px]"
+            >
               <Send className="w-5 h-5" />
-            )}
-          </Button>
+            </Button>
+          )}
         </div>
         <p className="text-[10px] text-muted-foreground mt-1">
           Press Enter to send, Shift+Enter for new line

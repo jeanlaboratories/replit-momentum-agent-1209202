@@ -1,9 +1,11 @@
 import logging
 import requests
-from typing import Dict, Any
+import os
+from typing import Dict, Any, List
 from marketing_agent import MarketingAgent
 from utils.context_utils import get_brand_context, get_settings_context
 from utils.model_defaults import DEFAULT_TEXT_MODEL
+from config import get_settings
 
 logger = logging.getLogger(__name__)
 
@@ -603,4 +605,323 @@ def find_similar_media(
             "status": "error",
             "error": str(e),
             "results": []
+        }
+
+
+def search_youtube_videos(
+    query: str,
+    max_results: int = 10,
+    order: str = "relevance",
+    video_duration: str = "any",
+    video_definition: str = "any",
+    video_license: str = "any"
+) -> Dict[str, Any]:
+    """
+    Search YouTube for videos and return results that can be saved to the media library.
+    
+    This is a Team Tool for discovering YouTube videos that can be added to the team's
+    media library. The tool searches YouTube using the YouTube Data API v3 and returns
+    video metadata including title, description, thumbnail, channel, and URL.
+    
+    Use this tool when team members need to:
+    - Find YouTube videos for campaigns or content
+    - Search for reference videos or inspiration
+    - Discover videos to add to the media library
+    - Find educational or tutorial videos
+    
+    Examples:
+    - "Search YouTube for marketing videos"
+    - "Find YouTube videos about product launches"
+    - "Search for tutorial videos on design"
+    - "Find YouTube videos with creative content"
+    
+    Args:
+        query (str): Search query for YouTube videos (required).
+        max_results (int): Maximum number of results to return (default: 10, max: 50).
+        order (str): Sort order: "relevance", "date", "rating", "title", "viewCount" (default: "relevance").
+        video_duration (str): Filter by duration: "any", "short" (<4min), "medium" (4-20min), "long" (>20min) (default: "any").
+        video_definition (str): Filter by quality: "any", "high", "standard" (default: "any").
+        video_license (str): Filter by license: "any", "youtube", "creativeCommon" (default: "any").
+    
+    Returns:
+        dict: Contains 'videos' list with video metadata, 'total_results', and search metadata.
+              Each video includes: id, title, description, url, thumbnail_url, channel_title,
+              published_at, duration, view_count, and other metadata.
+    """
+    try:
+        from googleapiclient.discovery import build
+        
+        settings = get_settings()
+        api_key = settings.google_api_key
+        
+        if not api_key:
+            return {
+                "status": "error",
+                "error": "YouTube Data API key not configured. Please set MOMENTUM_GOOGLE_API_KEY environment variable.",
+                "videos": [],
+                "total_results": 0
+            }
+        
+        # Build YouTube API client
+        youtube = build('youtube', 'v3', developerKey=api_key)
+        
+        # Prepare search parameters
+        search_params = {
+            'q': query,
+            'part': 'id,snippet',
+            'type': 'video',
+            'maxResults': min(max_results, 50),  # API limit is 50
+            'order': order,
+        }
+        
+        # Add optional filters
+        if video_duration != "any":
+            search_params['videoDuration'] = video_duration
+        if video_definition != "any":
+            search_params['videoDefinition'] = video_definition
+        if video_license != "any":
+            search_params['videoLicense'] = video_license
+        
+        # Execute search
+        search_response = youtube.search().list(**search_params).execute()
+        
+        # Get video IDs for detailed information
+        video_ids = [item['id']['videoId'] for item in search_response.get('items', [])]
+        
+        if not video_ids:
+            return {
+                "status": "success",
+                "videos": [],
+                "total_results": 0,
+                "query": query,
+                "content": f"No YouTube videos found for '{query}'. Try different search terms.",
+                "message": f"No YouTube videos found for '{query}'."
+            }
+        
+        # Get detailed video information
+        videos_response = youtube.videos().list(
+            part='id,snippet,contentDetails,statistics',
+            id=','.join(video_ids)
+        ).execute()
+        
+        # Format results
+        videos = []
+        video_urls = []
+        for video in videos_response.get('items', []):
+            video_id = video['id']
+            snippet = video['snippet']
+            statistics = video.get('statistics', {})
+            content_details = video.get('contentDetails', {})
+            
+            # Build video URL
+            video_url = f"https://www.youtube.com/watch?v={video_id}"
+            video_urls.append(video_url)
+            
+            # Get thumbnail (prefer high quality)
+            thumbnails = snippet.get('thumbnails', {})
+            thumbnail_url = (
+                thumbnails.get('maxres', {}).get('url') or
+                thumbnails.get('high', {}).get('url') or
+                thumbnails.get('medium', {}).get('url') or
+                thumbnails.get('default', {}).get('url') or
+                f"https://img.youtube.com/vi/{video_id}/maxresdefault.jpg"
+            )
+            
+            # Parse duration (ISO 8601 format: PT4M13S)
+            duration_str = content_details.get('duration', '')
+            duration_seconds = _parse_duration(duration_str)
+            
+            video_data = {
+                "id": video_id,
+                "title": snippet.get('title', ''),
+                "description": snippet.get('description', ''),
+                "url": video_url,
+                "thumbnail_url": thumbnail_url,
+                "channel_title": snippet.get('channelTitle', ''),
+                "channel_id": snippet.get('channelId', ''),
+                "published_at": snippet.get('publishedAt', ''),
+                "duration": duration_str,
+                "duration_seconds": duration_seconds,
+                "view_count": int(statistics.get('viewCount', 0)),
+                "like_count": int(statistics.get('likeCount', 0)),
+                "comment_count": int(statistics.get('commentCount', 0)),
+                "tags": snippet.get('tags', []),
+            }
+            videos.append(video_data)
+        
+        # Standardized text response format with video URL markers for chat display
+        summary_text = f"Found {len(videos)} YouTube video(s) for '{query}':\n\n"
+        for i, video in enumerate(videos, 1):
+            summary_text += f"{i}. **{video['title']}**\n"
+            summary_text += f"   Channel: {video['channel_title']}\n"
+            if video['duration_seconds']:
+                summary_text += f"   Duration: {_format_duration(video['duration_seconds'])}\n"
+            summary_text += f"   Views: {video['view_count']:,}\n"
+            summary_text += f"   {video['url']}\n\n"
+        
+        # Add video URL markers for frontend to extract and display nicely
+        media_markers = ""
+        for url in video_urls:
+            media_markers += f"\n__VIDEO_URL__{url}__VIDEO_URL__"
+        
+        return {
+            "status": "success",
+            "videos": videos,
+            "total_results": len(videos),
+            "query": query,
+            "content": summary_text + media_markers,  # Primary text field with video markers
+            "message": summary_text  # Backward compatibility (text only)
+        }
+        
+    except ImportError:
+        logger.error("google-api-python-client not installed. Install with: pip install google-api-python-client")
+        return {
+            "status": "error",
+            "error": "YouTube API client not available. Please install google-api-python-client.",
+            "videos": [],
+            "total_results": 0
+        }
+    except Exception as e:
+        logger.error(f"Error searching YouTube: {e}")
+        return {
+            "status": "error",
+            "error": str(e),
+            "videos": [],
+            "total_results": 0
+        }
+
+
+def _parse_duration(duration_str: str) -> int:
+    """Parse ISO 8601 duration string to seconds."""
+    import re
+    if not duration_str:
+        return 0
+    
+    # Match PT4M13S format
+    match = re.match(r'PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?', duration_str)
+    if not match:
+        return 0
+    
+    hours = int(match.group(1) or 0)
+    minutes = int(match.group(2) or 0)
+    seconds = int(match.group(3) or 0)
+    
+    return hours * 3600 + minutes * 60 + seconds
+
+
+def _format_duration(seconds: int) -> str:
+    """Format seconds to human-readable duration."""
+    if seconds < 60:
+        return f"{seconds}s"
+    elif seconds < 3600:
+        minutes = seconds // 60
+        secs = seconds % 60
+        return f"{minutes}m {secs}s" if secs > 0 else f"{minutes}m"
+    else:
+        hours = seconds // 3600
+        minutes = (seconds % 3600) // 60
+        secs = seconds % 60
+        if minutes == 0 and secs == 0:
+            return f"{hours}h"
+        elif secs == 0:
+            return f"{hours}h {minutes}m"
+        else:
+            return f"{hours}h {minutes}m {secs}s"
+
+
+def save_youtube_video_to_library(
+    video_url: str,
+    brand_id: str = "",
+    title: str = "",
+    description: str = "",
+    thumbnail_url: str = "",
+    channel_title: str = "",
+    video_id: str = ""
+) -> Dict[str, Any]:
+    """
+    Save a YouTube video to the media library.
+    
+    This helper function can be called after searching YouTube to save
+    specific videos to the team's media library. The video will be indexed
+    and searchable along with other media assets.
+    
+    Args:
+        video_url (str): YouTube video URL (required).
+        brand_id (str): Brand/Team ID. If empty, uses current context.
+        title (str): Video title (optional, will be fetched if not provided).
+        description (str): Video description (optional).
+        thumbnail_url (str): Video thumbnail URL (optional).
+        channel_title (str): Channel name (optional).
+        video_id (str): YouTube video ID (optional, extracted from URL if not provided).
+    
+    Returns:
+        dict: Contains 'status', 'media_id' if successful, or 'error' if failed.
+    """
+    try:
+        effective_brand_id = brand_id or get_brand_context()
+        
+        if not effective_brand_id:
+            return {
+                "status": "error",
+                "error": "Brand ID required for saving YouTube videos."
+            }
+        
+        # Extract video ID from URL if not provided
+        if not video_id:
+            import re
+            match = re.search(r'(?:youtube\.com\/watch\?v=|youtu\.be\/)([a-zA-Z0-9_-]{11})', video_url)
+            if match:
+                video_id = match.group(1)
+            else:
+                return {
+                    "status": "error",
+                    "error": "Invalid YouTube URL. Could not extract video ID."
+                }
+        
+        # Call Next.js API to save the video
+        save_url = f"{NEXTJS_API_URL}/api/media-library/save-youtube"
+        payload = {
+            "brandId": effective_brand_id,
+            "videoUrl": video_url,
+            "title": title,
+            "description": description,
+            "thumbnailUrl": thumbnail_url,
+            "channelTitle": channel_title,
+            "videoId": video_id,
+        }
+        
+        response = requests.post(save_url, json=payload, timeout=10)
+        
+        if response.status_code == 200:
+            result = response.json()
+            if result.get("success"):
+                return {
+                    "status": "success",
+                    "media_id": result.get("mediaId"),
+                    "message": result.get("message", "YouTube video saved to media library"),
+                    "already_exists": result.get("alreadyExists", False)
+                }
+            else:
+                return {
+                    "status": "error",
+                    "error": result.get("message", "Failed to save YouTube video")
+                }
+        else:
+            error_data = response.json() if response.content else {}
+            return {
+                "status": "error",
+                "error": error_data.get("message", f"HTTP {response.status_code}: Failed to save YouTube video")
+            }
+            
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Error saving YouTube video to library: {e}")
+        return {
+            "status": "error",
+            "error": f"Network error: {str(e)}"
+        }
+    except Exception as e:
+        logger.error(f"Error saving YouTube video to library: {e}")
+        return {
+            "status": "error",
+            "error": str(e)
         }

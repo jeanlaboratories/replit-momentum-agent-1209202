@@ -28,6 +28,92 @@ sys.modules['firebase_admin.credentials'] = firebase_admin_mock.credentials
 sys.modules['firebase_admin.storage'] = firebase_admin_mock.storage
 sys.modules['firebase_admin.firestore'] = firebase_admin_mock.firestore
 
+# Mock vertexai before any imports that might use it
+# This prevents the complex import chain from google.cloud.aiplatform
+mock_vertexai = MagicMock()
+mock_vertexai.__version__ = "1.129.0"
+mock_vertexai.rag = MagicMock()
+mock_vertexai.preview = MagicMock()
+mock_vertexai.preview.rag = MagicMock()
+sys.modules['vertexai'] = mock_vertexai
+sys.modules['vertexai.rag'] = mock_vertexai.rag
+sys.modules['vertexai.preview'] = mock_vertexai.preview
+sys.modules['vertexai.preview.rag'] = mock_vertexai.preview.rag
+
+# Mock google.cloud before ADK (simplified since vertexai is mocked)
+if 'google' not in sys.modules:
+    sys.modules['google'] = types.ModuleType('google')
+
+if 'google.cloud' not in sys.modules:
+    cloud_module = types.ModuleType('google.cloud')
+    cloud_module.__path__ = []
+    sys.modules['google.cloud'] = cloud_module
+
+# Mock ADK before patching
+def setup_adk_mocks():
+    """Set up ADK mocks to prevent import errors."""
+    if 'google.adk' not in sys.modules:
+        adk_module = types.ModuleType('google.adk')
+        adk_module.__path__ = []
+        sys.modules['google.adk'] = adk_module
+    
+    adk_submodules = ['agents', 'memory', 'sessions', 'events', 'models', 'runners', 'tools']
+    for submod in adk_submodules:
+        mod_name = f'google.adk.{submod}'
+        if mod_name not in sys.modules:
+            submod_obj = types.ModuleType(mod_name)
+            submod_obj.__path__ = []
+            setattr(sys.modules['google.adk'], submod, submod_obj)
+            sys.modules[mod_name] = submod_obj
+    
+    if 'google.adk.tools.agent_tool' not in sys.modules:
+        agent_tool_obj = types.ModuleType('google.adk.tools.agent_tool')
+        sys.modules['google.adk.tools.agent_tool'] = agent_tool_obj
+    
+    # Mock classes
+    mock_vertex_ai_memory_bank_service = type('VertexAiMemoryBankService', (), {
+        '__init__': lambda self, *args, **kwargs: None,
+        '_get_api_client': lambda self: MagicMock(),
+    })
+    mock_vertex_ai_rag_memory_service = type('VertexAiRagMemoryService', (), {
+        '__init__': lambda self, *args, **kwargs: None,
+        '_get_api_client': lambda self: MagicMock(),
+    })
+    sys.modules['google.adk.memory'].VertexAiMemoryBankService = mock_vertex_ai_memory_bank_service
+    sys.modules['google.adk.memory'].VertexAiRagMemoryService = mock_vertex_ai_rag_memory_service
+    
+    def mock_agent_init(self, *args, **kwargs):
+        self.tools = kwargs.get('tools', [])
+        self.instruction = kwargs.get('instruction', '')
+        self.model = kwargs.get('model', 'gemini-2.0-flash')
+    mock_agent = type('Agent', (), {'__init__': mock_agent_init})
+    mock_llm_agent = type('LlmAgent', (), {'__init__': mock_agent_init})
+    sys.modules['google.adk.agents'].Agent = mock_agent
+    sys.modules['google.adk.agents'].LlmAgent = mock_llm_agent
+    
+    def mock_runner_init(self, *args, **kwargs):
+        pass
+    mock_runner = type('Runner', (), {'__init__': mock_runner_init})
+    sys.modules['google.adk.runners'].Runner = mock_runner
+    
+    def mock_agent_tool_init(self, *args, **kwargs):
+        pass
+    mock_agent_tool = type('AgentTool', (), {'__init__': mock_agent_tool_init})
+    sys.modules['google.adk.tools'].AgentTool = mock_agent_tool
+    sys.modules['google.adk.tools.agent_tool'].AgentTool = mock_agent_tool
+    
+    mock_google_search = MagicMock()
+    sys.modules['google.adk.tools'].google_search = mock_google_search
+    
+    def mock_session_service_init(self, *args, **kwargs):
+        pass
+    mock_session_service = type('SessionService', (), {'__init__': mock_session_service_init})
+    mock_inmemory_session_service = type('InMemorySessionService', (), {'__init__': mock_session_service_init})
+    sys.modules['google.adk.sessions'].SessionService = mock_session_service
+    sys.modules['google.adk.sessions'].InMemorySessionService = mock_inmemory_session_service
+
+setup_adk_mocks()
+
 # Import modules with proper patching
 with patch('firebase_admin.credentials.Certificate'), \
      patch('firebase_admin.initialize_app'), \
@@ -145,53 +231,66 @@ def test_save_conversation_personal_memory(mock_isinstance, mock_firestore, mock
         mock_service_instance = MagicMock()
         mock_service_instance.add_memory = AsyncMock() # Ensure add_memory is awaitable
         
-        # Mock ADK client and response chain
-        mock_client = MagicMock()
-        mock_service_instance._get_api_client.return_value = mock_client
-
-        mock_operation = MagicMock()
-        mock_client.agent_engines.memories.create.return_value = mock_operation
-        # Mock response to avoid errors during ID extraction
-        mock_response = MagicMock()
-        mock_operation.response = mock_response
-        mock_memory = MagicMock()
-        mock_memory.name = 'projects/p/locations/l/reasoningEngines/e/memories/m1'
-        mock_response.memory = mock_memory
-        if hasattr(mock_response, 'generated_memories'):
-            del mock_response.generated_memories
-
-        # Ensure the class returns our mock instance when called
-        mock_adk_service.return_value = mock_service_instance
+        # Mock vertexai.Client (new approach matching ADK notebook)
+        # vertexai is imported inside the function, so we need to mock it in sys.modules
+        mock_vertexai_client = MagicMock()
+        mock_agent_engines = MagicMock()
+        mock_memories = MagicMock()
+        mock_vertexai_client.agent_engines = mock_agent_engines
+        mock_agent_engines.memories = mock_memories
         
-        # Inject our mock service directly into the module
-        import python_service.services.memory_service as memory_service
-        original_memory_service = memory_service.memory_service
-        memory_service.memory_service = mock_service_instance
+        mock_operation = MagicMock()
+        mock_memories.generate.return_value = mock_operation
+        # Mock response to avoid errors during ID extraction
+        mock_operation.name = 'projects/p/locations/l/reasoningEngines/e/memories/m1'
 
-        chat_history = [
-            {"role": "user", "content": "I like blue"},
-            {"role": "model", "content": "Hi there"}
-        ]
-
-        os.environ['MOMENTUM_NEXT_PUBLIC_FIREBASE_PROJECT_ID'] = 'test-project'
-        os.environ['MOMENTUM_AGENT_ENGINE_LOCATION'] = 'us-central1'
-        os.environ['MOMENTUM_ENABLE_MEMORY_BANK'] = 'true'
-
-        # Mock extract_memories_from_conversation
-        original_extract = memory_service.extract_memories_from_conversation
-        memory_service.extract_memories_from_conversation = MagicMock(return_value=["User likes blue"])
-
+        # Create mock vertexai module and inject into sys.modules
+        # This works because vertexai is imported inside the function
+        mock_vertexai_module = MagicMock()
+        mock_vertexai_module.Client.return_value = mock_vertexai_client
+        mock_vertexai_module.init = MagicMock()
+        
+        # Store original if it exists
+        original_vertexai = sys.modules.get('vertexai')
+        sys.modules['vertexai'] = mock_vertexai_module
+        
         try:
+            # Ensure the class returns our mock instance when called
+            mock_adk_service.return_value = mock_service_instance
+            
+            # Inject our mock service directly into the module
+            import python_service.services.memory_service as memory_service
+            original_memory_service = memory_service.memory_service
+            memory_service.memory_service = mock_service_instance
+
+            chat_history = [
+                {"role": "user", "content": "I like blue"},
+                {"role": "model", "content": "Hi there"}
+            ]
+
+            os.environ['MOMENTUM_NEXT_PUBLIC_FIREBASE_PROJECT_ID'] = 'test-project'
+            os.environ['MOMENTUM_AGENT_ENGINE_LOCATION'] = 'us-central1'
+            os.environ['MOMENTUM_ENABLE_MEMORY_BANK'] = 'true'
+
+            # Mock extract_memories_from_conversation
+            original_extract = memory_service.extract_memories_from_conversation
+            memory_service.extract_memories_from_conversation = MagicMock(return_value=["User likes blue"])
+
             await save_conversation_to_memory("test_user_2", chat_history)
 
-            # Should call the API client's create method, not add_memory
-            # When using ADK, the code calls client.agent_engines.memories.create directly
-            mock_client.agent_engines.memories.create.assert_called_once()
+            # Should call vertexai.Client().agent_engines.memories.generate() (new approach)
+            mock_vertexai_module.Client.assert_called_once_with(project='test-project', location='us-central1')
+            mock_vertexai_module.init.assert_called_once_with(project='test-project', location='us-central1')
+            mock_memories.generate.assert_called_once()
 
             # Verify Firestore was also called to save the memory for listing
             mock_collection.document.assert_called()
         finally:
             # Restore original
+            if original_vertexai:
+                sys.modules['vertexai'] = original_vertexai
+            elif 'vertexai' in sys.modules:
+                del sys.modules['vertexai']
             memory_service.extract_memories_from_conversation = original_extract
             memory_service.memory_service = original_memory_service
     run_async(_test())

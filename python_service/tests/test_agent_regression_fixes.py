@@ -43,9 +43,96 @@ def setup_module(module):
         sys.modules['google.auth.transport.requests'] = requests_module
         sys.modules['google.auth.transport._http_client'] = http_client_module
     
+    # Mock google.adk and all its submodules before any imports
+    # This prevents ImportError when momentum_agent imports services.memory_service
+    # Always set up google module (might have been cleaned up by other tests)
+    if 'google' not in sys.modules or not hasattr(sys.modules['google'], '__path__'):
+        sys.modules['google'] = types.ModuleType('google')
+    
+    # Create google.adk as a proper package (always re-setup to handle test interference)
+    if 'google.adk' not in sys.modules or not hasattr(sys.modules['google.adk'], '__path__'):
+        adk_module = types.ModuleType('google.adk')
+        adk_module.__path__ = []  # Make it a package
+        sys.modules['google.adk'] = adk_module
+    
+    # Create all necessary ADK submodules (always re-setup to handle test interference)
+    adk_submodules = ['agents', 'memory', 'sessions', 'events', 'models', 'runners', 'tools']
+    for submod in adk_submodules:
+        mod_name = f'google.adk.{submod}'
+        if mod_name not in sys.modules or not hasattr(sys.modules.get(mod_name, None), '__path__'):
+            submod_obj = types.ModuleType(mod_name)
+            submod_obj.__path__ = []  # Make it a package
+            setattr(sys.modules['google.adk'], submod, submod_obj)
+            sys.modules[mod_name] = submod_obj
+    
+    # Create agent_tool submodule under tools (always re-setup)
+    if 'google.adk.tools.agent_tool' not in sys.modules:
+        agent_tool_obj = types.ModuleType('google.adk.tools.agent_tool')
+        sys.modules['google.adk.tools.agent_tool'] = agent_tool_obj
+    
+    # Create mock classes for ADK (always re-setup to handle test interference)
+    # VertexAiMemoryBankService and VertexAiRagMemoryService for memory service
+    mock_vertex_ai_memory_bank_service = type('VertexAiMemoryBankService', (), {
+        '__init__': lambda self, *args, **kwargs: None,
+        '_get_api_client': lambda self: MagicMock(),
+    })
+    mock_vertex_ai_rag_memory_service = type('VertexAiRagMemoryService', (), {
+        '__init__': lambda self, *args, **kwargs: None,
+        '_get_api_client': lambda self: MagicMock(),
+    })
+    # Always set these (might have been cleaned up by other tests)
+    sys.modules['google.adk.memory'].VertexAiMemoryBankService = mock_vertex_ai_memory_bank_service
+    sys.modules['google.adk.memory'].VertexAiRagMemoryService = mock_vertex_ai_rag_memory_service
+    
+    # Agent and LlmAgent for agents module (need to accept *args, **kwargs and have tools/instruction/model attributes)
+    def mock_agent_init(self, *args, **kwargs):
+        # Set default attributes that tests might access
+        self.tools = kwargs.get('tools', [])
+        self.instruction = kwargs.get('instruction', '')
+        self.model = kwargs.get('model', 'gemini-2.0-flash')
+    mock_agent = type('Agent', (), {'__init__': mock_agent_init})
+    
+    def mock_llm_agent_init(self, *args, **kwargs):
+        # Set default attributes that tests might access
+        self.tools = kwargs.get('tools', [])
+        self.instruction = kwargs.get('instruction', '')
+        self.model = kwargs.get('model', 'gemini-2.0-flash')
+    mock_llm_agent = type('LlmAgent', (), {'__init__': mock_llm_agent_init})
+    # Always set these (might have been cleaned up by other tests)
+    sys.modules['google.adk.agents'].Agent = mock_agent
+    sys.modules['google.adk.agents'].LlmAgent = mock_llm_agent
+    
+    # Runner for runners module
+    def mock_runner_init(self, *args, **kwargs):
+        pass
+    mock_runner = type('Runner', (), {'__init__': mock_runner_init})
+    sys.modules['google.adk.runners'].Runner = mock_runner
+    
+    # AgentTool for tools module (both in tools and tools.agent_tool) - needs to accept *args, **kwargs
+    def mock_agent_tool_init(self, *args, **kwargs):
+        pass
+    mock_agent_tool = type('AgentTool', (), {'__init__': mock_agent_tool_init})
+    # Always set these (might have been cleaned up by other tests)
+    sys.modules['google.adk.tools'].AgentTool = mock_agent_tool
+    sys.modules['google.adk.tools.agent_tool'].AgentTool = mock_agent_tool
+    
+    # google_search for tools module
+    mock_google_search = MagicMock()
+    sys.modules['google.adk.tools'].google_search = mock_google_search
+    
+    # SessionService and InMemorySessionService for sessions module
+    def mock_session_service_init(self, *args, **kwargs):
+        pass
+    mock_session_service = type('SessionService', (), {'__init__': mock_session_service_init})
+    mock_inmemory_session_service = type('InMemorySessionService', (), {'__init__': mock_session_service_init})
+    # Always set these (might have been cleaned up by other tests)
+    sys.modules['google.adk.sessions'].SessionService = mock_session_service
+    sys.modules['google.adk.sessions'].InMemorySessionService = mock_inmemory_session_service
+    
     # Remove mocked google.adk modules that other test files inject at import time
+    # But keep our properly structured mocks
     mocked_modules = [
-        'google.adk', 'google.adk.agents', 'google.adk.memory', 'google.adk.sessions',
+        'google.adk.agents', 'google.adk.sessions',
         'google.adk.events', 'google.adk.models', 'google.adk.runners', 'google.adk.tools',
         'momentum_agent'
     ]
@@ -125,6 +212,7 @@ class TestAgentToolsRegistration(unittest.TestCase):
             'search_videos',  # Search videos specifically
             'search_team_media',  # Team tool for multimodal media search
             'find_similar_media',  # Find similar media items
+            'search_youtube_videos',  # Team tool for searching YouTube
         ]
 
         for tool in expected_function_tools:
@@ -133,7 +221,7 @@ class TestAgentToolsRegistration(unittest.TestCase):
         # Verify search_agent_tool (AgentTool) is present
         self.assertTrue(has_search_agent, "search_agent_tool (AgentTool) should be in the agent's tools list")
 
-        # Verify count matches (20 functions + 1 AgentTool = 21 tools)
+        # Verify count matches (21 functions + 1 AgentTool = 22 tools)
         self.assertEqual(len(agent.tools), len(expected_function_tools) + 1,
                         f"Expected {len(expected_function_tools) + 1} tools (including AgentTool), got {len(agent.tools)}")
 
@@ -491,13 +579,15 @@ class TestAgentImports(unittest.TestCase):
             process_youtube_video
         )
         from tools.media_tools import nano_banana
+        from tools.team_tools import search_youtube_videos
 
         # All should be callable
         tools = [
             generate_text, generate_image, generate_video, search_web,
             crawl_website, suggest_domain_names, create_team_strategy,
             plan_website, design_logo_concepts, create_event,
-            nano_banana, recall_memory, save_memory, process_youtube_video
+            nano_banana, recall_memory, save_memory, process_youtube_video,
+            search_youtube_videos
         ]
 
         for tool in tools:

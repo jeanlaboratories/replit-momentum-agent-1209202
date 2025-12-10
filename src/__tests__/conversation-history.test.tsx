@@ -191,16 +191,22 @@ describe('Conversation History Feature', () => {
         expect(generateConversationPreview(shortMessage)).toBe(shortMessage);
       });
 
-      it('should truncate at 100 chars for long messages', () => {
-        const longMessage = 'A'.repeat(150);
+      it('should truncate at sentence boundary for long messages', () => {
+        const longMessage = 'A'.repeat(250);
         const result = generateConversationPreview(longMessage);
-        expect(result.length).toBe(103); // 100 chars + "..."
-        expect(result).toContain('...');
+        // New behavior: creates full sentences up to 200 chars, may add ellipsis
+        expect(result.length).toBeLessThanOrEqual(203); // 200 chars + "..." max
+        // Should either end with punctuation or ellipsis
+        expect(result.endsWith('.') || result.endsWith('...')).toBe(true);
       });
 
-      it('should replace newlines with spaces', () => {
+      it('should replace newlines with spaces and add punctuation if needed', () => {
         const multilineMessage = 'Line 1\nLine 2\nLine 3';
-        expect(generateConversationPreview(multilineMessage)).toBe('Line 1 Line 2 Line 3');
+        const result = generateConversationPreview(multilineMessage);
+        // New behavior: ensures proper punctuation
+        expect(result).toContain('Line 1 Line 2 Line 3');
+        // Should end with punctuation if message doesn't have it
+        expect(result.endsWith('.') || result.endsWith('!') || result.endsWith('?')).toBe(true);
       });
     });
   });

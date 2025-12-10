@@ -13,6 +13,7 @@ import sys
 import os
 import base64
 import json
+from google.api_core import exceptions as google_exceptions
 
 # Add python_service to path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
@@ -21,6 +22,86 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 sys.modules['firebase_admin'] = MagicMock()
 sys.modules['firebase_admin.storage'] = MagicMock()
 sys.modules['firebase_admin.credentials'] = MagicMock()
+
+# Mock ADK before importing momentum_agent
+import types
+def setup_adk_mocks():
+    """Set up ADK mocks to prevent import errors."""
+    if 'google' not in sys.modules:
+        sys.modules['google'] = types.ModuleType('google')
+    
+    if 'google.adk' not in sys.modules:
+        adk_module = types.ModuleType('google.adk')
+        adk_module.__path__ = []
+        sys.modules['google.adk'] = adk_module
+    
+    adk_submodules = ['agents', 'memory', 'sessions', 'events', 'models', 'runners', 'tools']
+    for submod in adk_submodules:
+        mod_name = f'google.adk.{submod}'
+        if mod_name not in sys.modules:
+            submod_obj = types.ModuleType(mod_name)
+            submod_obj.__path__ = []
+            setattr(sys.modules['google.adk'], submod, submod_obj)
+            sys.modules[mod_name] = submod_obj
+    
+    if 'google.adk.tools.agent_tool' not in sys.modules:
+        agent_tool_obj = types.ModuleType('google.adk.tools.agent_tool')
+        sys.modules['google.adk.tools.agent_tool'] = agent_tool_obj
+    
+    # Create function_tool submodule (required for ADK flows)
+    if 'google.adk.tools.function_tool' not in sys.modules:
+        function_tool_obj = types.ModuleType('google.adk.tools.function_tool')
+        sys.modules['google.adk.tools.function_tool'] = function_tool_obj
+    
+    # Mock FunctionTool class (required by ADK flows)
+    def mock_function_tool_init(self, *args, **kwargs):
+        pass
+    mock_function_tool = type('FunctionTool', (), {'__init__': mock_function_tool_init})
+    sys.modules['google.adk.tools.function_tool'].FunctionTool = mock_function_tool
+    
+    # Mock classes
+    mock_vertex_ai_memory_bank_service = type('VertexAiMemoryBankService', (), {
+        '__init__': lambda self, *args, **kwargs: None,
+        '_get_api_client': lambda self: MagicMock(),
+    })
+    mock_vertex_ai_rag_memory_service = type('VertexAiRagMemoryService', (), {
+        '__init__': lambda self, *args, **kwargs: None,
+        '_get_api_client': lambda self: MagicMock(),
+    })
+    sys.modules['google.adk.memory'].VertexAiMemoryBankService = mock_vertex_ai_memory_bank_service
+    sys.modules['google.adk.memory'].VertexAiRagMemoryService = mock_vertex_ai_rag_memory_service
+    
+    def mock_agent_init(self, *args, **kwargs):
+        self.tools = kwargs.get('tools', [])
+        self.instruction = kwargs.get('instruction', '')
+        self.model = kwargs.get('model', 'gemini-2.0-flash')
+    mock_agent = type('Agent', (), {'__init__': mock_agent_init})
+    mock_llm_agent = type('LlmAgent', (), {'__init__': mock_agent_init})
+    sys.modules['google.adk.agents'].Agent = mock_agent
+    sys.modules['google.adk.agents'].LlmAgent = mock_llm_agent
+    
+    def mock_runner_init(self, *args, **kwargs):
+        pass
+    mock_runner = type('Runner', (), {'__init__': mock_runner_init})
+    sys.modules['google.adk.runners'].Runner = mock_runner
+    
+    def mock_agent_tool_init(self, *args, **kwargs):
+        pass
+    mock_agent_tool = type('AgentTool', (), {'__init__': mock_agent_tool_init})
+    sys.modules['google.adk.tools'].AgentTool = mock_agent_tool
+    sys.modules['google.adk.tools.agent_tool'].AgentTool = mock_agent_tool
+    
+    mock_google_search = MagicMock()
+    sys.modules['google.adk.tools'].google_search = mock_google_search
+    
+    def mock_session_service_init(self, *args, **kwargs):
+        pass
+    mock_session_service = type('SessionService', (), {'__init__': mock_session_service_init})
+    mock_inmemory_session_service = type('InMemorySessionService', (), {'__init__': mock_session_service_init})
+    sys.modules['google.adk.sessions'].SessionService = mock_session_service
+    sys.modules['google.adk.sessions'].InMemorySessionService = mock_inmemory_session_service
+
+setup_adk_mocks()
 
 
 # =============================================================================
@@ -180,11 +261,33 @@ class TestUnifiedGenerateImageWrapper(unittest.TestCase):
 
         from momentum_agent import generate_image
 
+        # Note: The API only supports "block_low_and_above" for safety_filter_level
+        # Other levels will be rejected by the API, but we test that the wrapper
+        # correctly passes through the parameter. For unsupported levels, we expect
+        # an error response from the API, which is valid behavior.
         safety_levels = ["block_only_high", "block_medium_and_above", "block_low_and_above"]
 
         for level in safety_levels:
-            result = generate_image(prompt="Test", safety_filter_level=level)
-            self.assertEqual(result['status'], 'success', f"Failed for safety level {level}")
+            # Reset mock for each iteration - clear side_effect and reset return value
+            mock_genai.models.generate_images.reset_mock()
+            mock_genai.models.generate_images.side_effect = None  # Clear any previous side_effect
+            self._setup_mock_generate_response(mock_genai)
+            
+            # For unsupported levels, mock the API to return an error
+            if level != "block_low_and_above":
+                mock_genai.models.generate_images.side_effect = google_exceptions.InvalidArgument(
+                    "Only block_low_and_above is supported for safetySetting."
+                )
+                result = generate_image(prompt="Test", safety_filter_level=level)
+                # Unsupported levels should return error status
+                self.assertEqual(result['status'], 'error', 
+                               f"Expected error for unsupported safety level {level}")
+            else:
+                # Supported level should succeed - ensure side_effect is None
+                mock_genai.models.generate_images.side_effect = None
+                result = generate_image(prompt="Test", safety_filter_level=level)
+                self.assertEqual(result['status'], 'success', 
+                               f"Failed for supported safety level {level}")
 
     @patch('tools.media_tools.genai_client')
     @patch('tools.media_tools.upload_to_storage')

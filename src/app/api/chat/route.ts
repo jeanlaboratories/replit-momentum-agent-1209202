@@ -1345,6 +1345,109 @@ async function handleRagSearch(prompt: string, brandId?: string) {
   });
 }
 
+// Handle YouTube Search
+async function handleYouTubeSearch(prompt: string, brandId?: string) {
+  const encoder = new TextEncoder();
+
+  const stream = new ReadableStream({
+    async start(controller) {
+      try {
+        if (!brandId) {
+          controller.enqueue(encoder.encode('Error: Brand ID is required for YouTube search'));
+          controller.close();
+          return;
+        }
+
+        // Add timeout
+        const controller2 = new AbortController();
+        const timeoutId = setTimeout(() => controller2.abort(), 30000); // 30 seconds for YouTube API
+
+        let response;
+        try {
+          response = await fetch(`${PYTHON_AGENT_URL}/agent/youtube-search`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ query: prompt, brand_id: brandId, max_results: 10 }),
+            signal: controller2.signal,
+          });
+        } finally {
+          clearTimeout(timeoutId);
+        }
+
+        if (!response.ok) {
+          const errorText = await response.text();
+          throw new Error(`Python service error: ${response.status} ${errorText}`);
+        }
+
+        const data = await response.json();
+
+        // Handle API errors (like YouTube API 403)
+        if (data.status === 'error') {
+          let errorMessage = data.error || 'Unknown error';
+          
+          // Provide user-friendly error messages
+          if (errorMessage.includes('403') || errorMessage.includes('blocked') || errorMessage.includes('forbidden')) {
+            errorMessage = 'YouTube Data API v3 is not enabled or the API key does not have permission to search. Please enable YouTube Data API v3 in Google Cloud Console and ensure your API key has the correct permissions.';
+          } else if (errorMessage.includes('API key') || errorMessage.includes('not configured')) {
+            errorMessage = 'YouTube API key is not configured. Please set MOMENTUM_GOOGLE_API_KEY environment variable with a valid YouTube Data API v3 key.';
+          }
+          
+          controller.enqueue(encoder.encode(JSON.stringify({
+            type: 'final_response',
+            content: `❌ YouTube Search Error: ${errorMessage}`
+          }) + '\n'));
+          controller.close();
+          return;
+        }
+
+        let formattedResult = '';
+        if (data.status === 'success') {
+          if (data.videos && data.videos.length > 0) {
+            formattedResult = `## Found ${data.videos.length} YouTube Video(s)\n\n`;
+            for (const video of data.videos) {
+              formattedResult += `### ${video.title}\n`;
+              if (video.channel_title) {
+                formattedResult += `Channel: ${video.channel_title}\n`;
+              }
+              if (video.duration_seconds) {
+                const minutes = Math.floor(video.duration_seconds / 60);
+                const seconds = video.duration_seconds % 60;
+                formattedResult += `Duration: ${minutes}:${seconds.toString().padStart(2, '0')}\n`;
+              }
+              if (video.view_count) {
+                formattedResult += `Views: ${video.view_count.toLocaleString()}\n`;
+              }
+              formattedResult += `${video.url}\n\n`;
+              
+              // Add video URL marker for display
+              formattedResult += `__VIDEO_URL__${video.url}__VIDEO_URL__\n\n`;
+            }
+          } else {
+            formattedResult = '📺 No YouTube videos found. Try different search terms.';
+          }
+        } else {
+          formattedResult = `📺 ${data.error || 'Failed to search YouTube'}`;
+        }
+
+        controller.enqueue(encoder.encode(formattedResult));
+        controller.close();
+      } catch (error) {
+        console.error('Error in YouTube Search:', error);
+        const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+        controller.enqueue(encoder.encode(`Error: ${errorMessage}`));
+        controller.close();
+      }
+    },
+  });
+
+  return new Response(stream, {
+    headers: {
+      'Content-Type': 'text/plain; charset=utf-8',
+      'Cache-Control': 'no-cache, no-transform',
+    },
+  });
+}
+
 // Handle Media Search
 async function handleMediaSearch(prompt: string, brandId?: string) {
   const encoder = new TextEncoder();
@@ -1702,6 +1805,9 @@ export async function POST(request: NextRequest) {
       
       case 'youtube-analysis':
         return handleYoutubeAnalysis(prompt, brandId, user?.uid, aiSettings);
+
+      case 'youtube-search':
+        return handleYouTubeSearch(prompt, brandId);
 
       case 'search':
         return handleSearch(prompt, brandId, user?.uid, aiSettings);

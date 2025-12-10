@@ -184,20 +184,22 @@ async def list_memories(request: Request):
             )
 
             if agent_engine_id:
-                from google.adk.memory import VertexAiMemoryBankService
+                # Use vertexai.Client (same as ADK notebook approach for saving)
+                import vertexai
                 settings = get_settings()
                 project_id = settings.effective_project_id
                 location = settings.agent_engine_location
 
                 logger.info(
-                    f"Connecting to ADK: project={project_id}, location={location}, engine={agent_engine_id}"
+                    f"Initializing vertexai for listing memories: project={project_id}, location={location}, engine={agent_engine_id}"
                 )
 
-                memory_service = VertexAiMemoryBankService(
-                    project=project_id,
-                    location=location,
-                    agent_engine_id=agent_engine_id)
-                client = memory_service._get_api_client()
+                # Initialize vertexai client (same as ADK notebook)
+                vertexai.init(project=project_id, location=location)
+                client = vertexai.Client(project=project_id, location=location)
+
+                logger.info(f"Created vertexai.Client: type={type(client).__name__}, has agent_engines={hasattr(client, 'agent_engines')}")
+
                 agent_engine_name = f'projects/{project_id}/locations/{location}/reasoningEngines/{agent_engine_id}'
 
                 logger.info(
@@ -220,14 +222,42 @@ async def list_memories(request: Request):
 
                     # Store both the short ID and the full name for deletion
                     memory_id = memory.name.split('/')[-1]
+                    
+                    # Try to find the corresponding Firestore document to get the actual document ID
+                    # This ensures we use the correct ID for deletion
+                    firestore_doc_id = memory_id  # Default to short ID
+                    memories_ref = db.collection(collection_path).document(
+                        entity_id).collection('memories')
+                    
+                    # First try to find by adkMemoryId matching the full name
+                    query = memories_ref.where('adkMemoryId', '==', memory.name).limit(1)
+                    matching_docs = list(query.stream())
+                    if matching_docs:
+                        firestore_doc_id = matching_docs[0].id
+                        logger.info(
+                            f"Found Firestore doc for Vertex AI memory: vertex_id={memory_id}, firestore_doc_id={firestore_doc_id}, full_name={memory.name}"
+                        )
+                    else:
+                        # Try to find by document ID matching the short memory ID
+                        # (memories created with Vertex AI ID as doc ID)
+                        doc_ref = memories_ref.document(memory_id)
+                        if doc_ref.get().exists:
+                            firestore_doc_id = memory_id
+                            logger.info(
+                                f"Found Firestore doc by ID match: firestore_doc_id={firestore_doc_id}, vertex_id={memory_id}"
+                            )
+                        else:
+                            logger.warning(
+                                f"No Firestore doc found for Vertex AI memory: vertex_id={memory_id}, full_name={memory.name}"
+                            )
+                    
                     logger.info(
-                        f"Listed memory: id={memory_id}, full_name={memory.name}"
+                        f"Listed memory: vertex_id={memory_id}, firestore_doc_id={firestore_doc_id}, full_name={memory.name}"
                     )
 
                     vertex_memories.append({
-                        'id': memory_id,
-                        'fullName':
-                        memory.name,  # Store full resource name for deletion
+                        'id': firestore_doc_id,  # Use Firestore document ID for reliable deletion
+                        'fullName': memory.name,  # Store full resource name for deletion
                         'content': content,
                         'createdAt': created_at_str,
                         'source': 'vertex',
@@ -363,27 +393,58 @@ async def delete_memory(request: Request):
             )
 
             # Get ADK memory ID from Firestore (if memory was created with Firestore tracking)
-            memory_doc = db.collection(collection_path).document(
-                entity_id).collection('memories').document(memory_id).get()
+            # First try to find by document ID (memory_id)
+            memories_ref = db.collection(collection_path).document(
+                entity_id).collection('memories')
+            memory_doc_ref = memories_ref.document(memory_id)
+            memory_doc = memory_doc_ref.get()
             adk_memory_id = memory_doc.to_dict().get(
                 'adkMemoryId') if memory_doc.exists else None
             logger.info(
-                f"Firestore memory doc exists: {memory_doc.exists}, adk_memory_id: {adk_memory_id}"
+                f"Firestore memory doc exists (by ID {memory_id}): {memory_doc.exists}, adk_memory_id: {adk_memory_id}"
             )
+            
+            # If not found by direct ID and we have full_name, try to find by adkMemoryId
+            if not memory_doc.exists and full_name:
+                logger.info(f"Memory not found by ID {memory_id}, searching by full_name: {full_name}")
+                query = memories_ref.where('adkMemoryId', '==', full_name).limit(1)
+                matching_docs = list(query.stream())
+                if matching_docs:
+                    memory_doc = matching_docs[0]
+                    memory_doc_ref = memory_doc.reference
+                    adk_memory_id = memory_doc.to_dict().get('adkMemoryId')
+                    logger.info(f"Found memory by adkMemoryId: doc_id={memory_doc.id}, adkMemoryId={adk_memory_id}")
+                else:
+                    # Also try matching by short memory ID in adkMemoryId
+                    # Extract short ID from full_name if it's a full path
+                    short_id_from_full = full_name.split('/')[-1] if '/' in full_name else full_name
+                    query2 = memories_ref.where('adkMemoryId', '>=', '').limit(100)
+                    for doc in query2.stream():
+                        doc_data = doc.to_dict()
+                        adk_id = doc_data.get('adkMemoryId', '')
+                        if adk_id and (adk_id.endswith(f'/{short_id_from_full}') or adk_id == short_id_from_full or adk_id.endswith(f'/{memory_id}') or adk_id == memory_id):
+                            memory_doc = doc
+                            memory_doc_ref = doc.reference
+                            adk_memory_id = adk_id
+                            logger.info(f"Found memory by adkMemoryId pattern match: doc_id={doc.id}, adkMemoryId={adk_id}")
+                            break
 
             # If no adkMemoryId in Firestore, the memory_id itself might be the Vertex AI memory ID
             # (this happens when memories are listed directly from Vertex AI)
             if agent_engine_id:
-                from google.adk.memory import VertexAiMemoryBankService
+                # Use vertexai.Client (same as ADK notebook approach for saving)
+                import vertexai
                 settings = get_settings()
                 project_id = settings.effective_project_id
                 location = settings.agent_engine_location
 
-                memory_service = VertexAiMemoryBankService(
-                    project=project_id,
-                    location=location,
-                    agent_engine_id=agent_engine_id)
-                client = memory_service._get_api_client()
+                logger.info(f"Initializing vertexai for memory deletion: project={project_id}, location={location}, engine_id={agent_engine_id}")
+
+                # Initialize vertexai client (same as ADK notebook)
+                vertexai.init(project=project_id, location=location)
+                client = vertexai.Client(project=project_id, location=location)
+
+                logger.info(f"Created vertexai.Client: type={type(client).__name__}, has agent_engines={hasattr(client, 'agent_engines')}")
 
                 # Use full_name directly if provided (most reliable), otherwise construct it
                 if full_name:
@@ -399,64 +460,94 @@ async def delete_memory(request: Request):
                         f"Constructed memory_name for deletion: {memory_name}")
 
                 try:
+                    logger.info(f"Calling client.agent_engines.memories.delete() with name={memory_name}")
                     client.agent_engines.memories.delete(name=memory_name)
                     logger.info(
                         f"Deleted {memory_type} memory from Vertex AI: {memory_name}"
                     )
                     vertex_deleted = True
                 except Exception as delete_e:
-                    logger.warning(
-                        f"Failed to delete memory from Vertex AI: {delete_e}")
+                    logger.error(f"Failed to delete memory from Vertex AI: {delete_e}")
+                    import traceback
+                    logger.error(traceback.format_exc())
         except Exception as vertex_e:
             logger.warning(
                 f"Failed to delete memory from Vertex AI: {vertex_e}. Proceeding with Firestore deletion."
             )
 
-        # 2. Delete from Firestore (if it exists there)
+        # 2. Delete from Firestore (ALWAYS attempt, regardless of Vertex AI success)
+        # Use the memory_doc_ref we found earlier (either by ID or by adkMemoryId search)
         try:
-            memories_ref = db.collection(collection_path).document(
-                entity_id).collection('memories')
-
-            # First try direct document ID match
-            memory_doc_ref = memories_ref.document(memory_id)
-            memory_doc = memory_doc_ref.get()
+            # memories_ref is already defined above, but ensure it's available here
+            if 'memories_ref' not in locals():
+                memories_ref = db.collection(collection_path).document(
+                    entity_id).collection('memories')
+            
+            # Use the memory_doc_ref we already found (either by ID or by adkMemoryId search)
+            # This ensures we're working with the correct document
             if memory_doc.exists:
+                # Delete using the document reference we already have
                 memory_doc_ref.delete()
                 firestore_deleted = True
+                actual_doc_id = memory_doc.id if hasattr(memory_doc, 'id') else memory_id
                 logger.info(
-                    f"Deleted {memory_type} memory from Firestore by doc ID: {memory_id}"
+                    f"Deleted {memory_type} memory from Firestore by doc ID: {actual_doc_id}"
                 )
             else:
+                # Document doesn't exist by direct ID, try to find by adkMemoryId
+                # This should have been found in the earlier search, but if not, try again here
+                logger.info(f"Memory doc not found by ID {memory_id}, searching by adkMemoryId")
+                
                 # Try to find by adkMemoryId field (for memories listed from Vertex AI)
                 # The full_name contains the Vertex AI path, and memory_id is the short ID
-                query = memories_ref.where('adkMemoryId', '==',
-                                           full_name).limit(1)
-                matching_docs = list(query.stream())
-
-                if not matching_docs and full_name:
-                    # Also try matching just the short memory ID in adkMemoryId
-                    query2 = memories_ref.where('adkMemoryId', '>=', '').limit(
-                        100)  # Get all docs with adkMemoryId
-                    for doc in query2.stream():
-                        doc_data = doc.to_dict()
-                        adk_id = doc_data.get('adkMemoryId', '')
-                        if adk_id and (adk_id.endswith(f'/{memory_id}')
-                                       or adk_id == memory_id
-                                       or memory_id in adk_id):
-                            doc.reference.delete()
-                            firestore_deleted = True
-                            logger.info(
-                                f"Deleted {memory_type} memory from Firestore by adkMemoryId match: {doc.id}"
-                            )
-                            break
-                elif matching_docs:
-                    matching_docs[0].reference.delete()
-                    firestore_deleted = True
-                    logger.info(
-                        f"Deleted {memory_type} memory from Firestore by adkMemoryId: {matching_docs[0].id}"
+                if full_name:
+                    query = memories_ref.where('adkMemoryId', '==', full_name).limit(1)
+                    matching_docs = list(query.stream())
+                    
+                    if matching_docs:
+                        matching_docs[0].reference.delete()
+                        firestore_deleted = True
+                        logger.info(
+                            f"Deleted {memory_type} memory from Firestore by adkMemoryId (full_name): {matching_docs[0].id}"
+                        )
+                    else:
+                        # Try matching by short memory ID in adkMemoryId
+                        # Extract short ID from full_name if it's a full path
+                        short_id_from_full = full_name.split('/')[-1] if '/' in full_name else full_name
+                        query2 = memories_ref.where('adkMemoryId', '>=', '').limit(100)
+                        for doc in query2.stream():
+                            doc_data = doc.to_dict()
+                            adk_id = doc_data.get('adkMemoryId', '')
+                            if adk_id:
+                                # Check if adkMemoryId ends with /memory_id or /short_id_from_full
+                                if (adk_id.endswith(f'/{memory_id}') or adk_id == memory_id or
+                                    adk_id.endswith(f'/{short_id_from_full}') or adk_id == short_id_from_full):
+                                    doc.reference.delete()
+                                    firestore_deleted = True
+                                    logger.info(
+                                        f"Deleted {memory_type} memory from Firestore by adkMemoryId match: {doc.id} (adkMemoryId: {adk_id})"
+                                    )
+                                    break
+                
+                # If still not found and we have adk_memory_id from earlier, try that
+                if not firestore_deleted and adk_memory_id:
+                    query3 = memories_ref.where('adkMemoryId', '==', adk_memory_id).limit(1)
+                    matching_docs = list(query3.stream())
+                    if matching_docs:
+                        matching_docs[0].reference.delete()
+                        firestore_deleted = True
+                        logger.info(
+                            f"Deleted {memory_type} memory from Firestore by adkMemoryId (from doc): {matching_docs[0].id}"
+                        )
+                
+                if not firestore_deleted:
+                    logger.warning(
+                        f"Memory {memory_id} not found in Firestore for deletion (full_name: {full_name})"
                     )
         except Exception as fs_e:
-            logger.warning(f"Failed to delete memory from Firestore: {fs_e}")
+            logger.error(f"Failed to delete memory from Firestore: {fs_e}")
+            import traceback
+            logger.error(traceback.format_exc())
 
         if vertex_deleted or firestore_deleted:
             return {"status": "success"}
@@ -514,30 +605,44 @@ async def clear_memories(request: Request):
             agent_engine_id = doc.to_dict().get(engine_id_field)
 
             if agent_engine_id:
-                from google.adk.memory import VertexAiMemoryBankService
+                # Use vertexai.Client (same as ADK notebook approach for saving)
+                import vertexai
                 settings = get_settings()
                 project_id = settings.effective_project_id
                 location = settings.agent_engine_location
 
-                memory_service = VertexAiMemoryBankService(
-                    project=project_id,
-                    location=location,
-                    agent_engine_id=agent_engine_id)
-                client = memory_service._get_api_client()
+                logger.info(f"Initializing vertexai for clearing memories: project={project_id}, location={location}, engine_id={agent_engine_id}")
+
+                # Initialize vertexai client (same as ADK notebook)
+                vertexai.init(project=project_id, location=location)
+                client = vertexai.Client(project=project_id, location=location)
+
+                logger.info(f"Created vertexai.Client: type={type(client).__name__}, has agent_engines={hasattr(client, 'agent_engines')}")
+
                 agent_engine_name = f'projects/{project_id}/locations/{location}/reasoningEngines/{agent_engine_id}'
 
                 # ADK doesn't have a clear_all, we have to list and delete each
+                logger.info(f"Listing memories from Vertex AI: {agent_engine_name}")
                 memories_list = client.agent_engines.memories.list(
                     name=agent_engine_name)
+                
+                deleted_count = 0
                 for memory in memories_list:
-                    client.agent_engines.memories.delete(name=memory.name)
+                    try:
+                        logger.info(f"Deleting memory from Vertex AI: {memory.name}")
+                        client.agent_engines.memories.delete(name=memory.name)
+                        deleted_count += 1
+                    except Exception as delete_e:
+                        logger.warning(f"Failed to delete memory {memory.name} from Vertex AI: {delete_e}")
+                
                 logger.info(
-                    f"Cleared all {memory_type} memories from Vertex AI for engine {agent_engine_id}"
+                    f"Cleared {deleted_count} {memory_type} memories from Vertex AI for engine {agent_engine_id}"
                 )
         except Exception as vertex_e:
-            logger.warning(
-                f"Failed to clear memories from Vertex AI: {vertex_e}. Proceeding with Firestore clear."
-            )
+            logger.error(f"Failed to clear memories from Vertex AI: {vertex_e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            logger.warning("Proceeding with Firestore clear.")
 
         # 2. Clear from Firestore
         memories_ref = db.collection(collection_path).document(
@@ -634,16 +739,20 @@ async def bulk_add_memories(request: Request):
         # Try to add to Vertex AI Memory Bank
         if agent_engine_id:
             try:
-                from google.adk.memory import VertexAiMemoryBankService
+                # Use vertexai.Client (same as ADK notebook approach for saving)
+                import vertexai
                 settings = get_settings()
                 project_id = settings.effective_project_id
                 location = settings.agent_engine_location
 
-                memory_service = VertexAiMemoryBankService(
-                    project=project_id,
-                    location=location,
-                    agent_engine_id=agent_engine_id)
-                client = memory_service._get_api_client()
+                logger.info(f"Initializing vertexai for bulk adding memories: project={project_id}, location={location}, engine_id={agent_engine_id}")
+
+                # Initialize vertexai client (same as ADK notebook)
+                vertexai.init(project=project_id, location=location)
+                client = vertexai.Client(project=project_id, location=location)
+
+                logger.info(f"Created vertexai.Client: type={type(client).__name__}, has agent_engines={hasattr(client, 'agent_engines')}")
+
                 agent_engine_name = f'projects/{project_id}/locations/{location}/reasoningEngines/{agent_engine_id}'
 
                 for memory_item in memories:
@@ -689,9 +798,18 @@ async def bulk_add_memories(request: Request):
                             firestore_doc['insightElementType'] = memory_data[
                                 'insightElementType']
 
-                        db.collection(collection_path).document(
-                            entity_id).collection('memories').add(
-                                firestore_doc)
+                        # Use adk_memory_id as document ID if available for easier deletion
+                        memories_col = db.collection(collection_path).document(
+                            entity_id).collection('memories')
+                        
+                        if adk_memory_id:
+                            # Extract short memory ID from full path for use as document ID
+                            short_memory_id = adk_memory_id.split('/')[-1] if '/' in adk_memory_id else adk_memory_id
+                            memories_col.document(short_memory_id).set(firestore_doc)
+                            logger.info(f"Saved bulk memory to Firestore with ID {short_memory_id} (from adk_memory_id)")
+                        else:
+                            # Fallback to auto-generated ID if no adk_memory_id
+                            memories_col.add(firestore_doc)
                         added_count += 1
                     except Exception as mem_e:
                         logger.warning(
@@ -717,6 +835,7 @@ async def bulk_add_memories(request: Request):
                             firestore_doc['insightElementType'] = memory_data[
                                 'insightElementType']
 
+                        # Use auto-generated ID for fallback (no Vertex AI ID available)
                         db.collection(collection_path).document(
                             entity_id).collection('memories').add(
                                 firestore_doc)
@@ -960,26 +1079,32 @@ async def delete_memories_by_artifact(request: Request):
         # Delete from Vertex AI if possible
         if agent_engine_id:
             try:
-                from google.adk.memory import VertexAiMemoryBankService
+                # Use vertexai.Client (same as ADK notebook approach for saving)
+                import vertexai
                 settings = get_settings()
                 project_id = settings.effective_project_id
                 location = settings.agent_engine_location
 
-                memory_service = VertexAiMemoryBankService(
-                    project=project_id,
-                    location=location,
-                    agent_engine_id=agent_engine_id)
-                client = memory_service._get_api_client()
+                logger.info(f"Initializing vertexai for deleting memories by artifact: project={project_id}, location={location}, engine_id={agent_engine_id}")
+
+                # Initialize vertexai client (same as ADK notebook)
+                vertexai.init(project=project_id, location=location)
+                client = vertexai.Client(project=project_id, location=location)
+
+                logger.info(f"Created vertexai.Client: type={type(client).__name__}, has agent_engines={hasattr(client, 'agent_engines')}")
+
                 agent_engine_name = f'projects/{project_id}/locations/{location}/reasoningEngines/{agent_engine_id}'
 
                 # List all memories from Vertex AI and match by content
                 try:
+                    logger.info(f"Listing memories from Vertex AI: {agent_engine_name}")
                     memories_list = client.agent_engines.memories.list(
                         name=agent_engine_name)
                     for memory in memories_list:
                         memory_content = getattr(memory, 'fact', None)
                         if memory_content and memory_content in content_to_delete:
                             try:
+                                logger.info(f"Deleting memory from Vertex AI: {memory.name}")
                                 client.agent_engines.memories.delete(
                                     name=memory.name)
                                 vertex_deleted_count += 1
@@ -987,9 +1112,11 @@ async def delete_memories_by_artifact(request: Request):
                                     f"Deleted memory from Vertex AI: {memory.name}"
                                 )
                             except Exception as delete_e:
-                                logger.warning(
+                                logger.error(
                                     f"Failed to delete memory {memory.name} from Vertex AI: {delete_e}"
                                 )
+                                import traceback
+                                logger.error(traceback.format_exc())
                                 errors.append(
                                     f"Vertex AI delete failed for {memory.name}: {str(delete_e)}"
                                 )

@@ -65,7 +65,7 @@ from utils.context_utils import (
     set_brand_context, set_user_context, set_settings_context, set_media_context, set_team_context,
     get_brand_context, get_user_context, get_settings_context, get_media_context, get_team_context
 )
-from tools.team_tools import suggest_domain_names, create_team_strategy, plan_website, create_event, search_team_media, find_similar_media
+from tools.team_tools import suggest_domain_names, create_team_strategy, plan_website, create_event, search_team_media, find_similar_media, search_youtube_videos
 from tools.media_tools import generate_image, analyze_image, generate_video, nano_banana, set_genai_client as set_media_genai_client
 from tools.rag_tools import query_brand_documents, index_brand_document
 from tools.media_search_tools import search_media_library, search_images, search_videos
@@ -836,34 +836,73 @@ async def save_memory(memory_text: str, user_id: str = "", scope: str = "persona
             team_agent_engine_id = brand_doc.to_dict().get('teamAgentEngineId') if brand_doc.exists else None
 
             if team_agent_engine_id and project_id:
-                # Save to Vertex AI team memory
+                # Save to Vertex AI team memory using vertexai.Client (as shown in ADK notebook)
                 try:
-                    adk_memory_service = VertexAiRagMemoryService(
-                        project=project_id,
-                        location=location,
-                        agent_engine_id=team_agent_engine_id
-                    )
-                    client = adk_memory_service._get_api_client()
+                    import vertexai
+                    
+                    logger.info(f"Initializing vertexai for team memory save: project={project_id}, location={location}, engine_id={team_agent_engine_id}")
+                    
+                    # Initialize vertexai client (same as ADK notebook)
+                    vertexai.init(project=project_id, location=location)
+                    client = vertexai.Client(project=project_id, location=location)
+                    
+                    logger.info(f"Created vertexai.Client: type={type(client).__name__}, has agent_engines={hasattr(client, 'agent_engines')}")
+                    
                     agent_engine_name = f"projects/{project_id}/locations/{location}/reasoningEngines/{team_agent_engine_id}"
-
-                    operation = client.agent_engines.memories.create(
+                    
+                    logger.info(f"Attempting to save team memory to Vertex AI: engine={agent_engine_name}, memory_text='{memory_text[:50]}...'")
+                    
+                    # Use memories.generate API with events (same format as ADK notebook)
+                    events_data = [{
+                        'content': {
+                            'role': 'user',
+                            'parts': [{'text': memory_text}]
+                        }
+                    }]
+                    
+                    logger.info(f"Calling client.agent_engines.memories.generate() with name={agent_engine_name}")
+                    operation = client.agent_engines.memories.generate(
                         name=agent_engine_name,
-                        fact=memory_text,
-                        scope={"brand_id": current_brand_id}
+                        direct_contents_source={'events': events_data},
+                        scope={
+                            'app_name': "MOMENTUM",
+                            'brand_id': current_brand_id
+                        },
+                        config={'wait_for_completion': True}
                     )
-
+                    
                     adk_memory_id = None
                     if hasattr(operation, 'name'):
                         adk_memory_id = operation.name
+                    elif hasattr(operation, 'response') and operation.response:
+                        if hasattr(operation.response, 'name'):
+                            adk_memory_id = operation.response.name
 
                     # Also save to Firestore for listing
-                    db.collection('brands').document(current_brand_id).collection('memories').add({
-                        'content': memory_text,
-                        'createdAt': firestore.SERVER_TIMESTAMP,
-                        'updatedAt': firestore.SERVER_TIMESTAMP,
-                        'adkMemoryId': adk_memory_id,
-                        'createdBy': actual_user_id
-                    })
+                    # Use adk_memory_id as document ID if available for easier deletion
+                    memories_col = db.collection('brands').document(current_brand_id).collection('memories')
+                    
+                    if adk_memory_id:
+                        # Extract short memory ID from full path for use as document ID
+                        # Format: projects/.../reasoningEngines/.../memories/{short_id}
+                        short_memory_id = adk_memory_id.split('/')[-1] if '/' in adk_memory_id else adk_memory_id
+                        memories_col.document(short_memory_id).set({
+                            'content': memory_text,
+                            'createdAt': firestore.SERVER_TIMESTAMP,
+                            'updatedAt': firestore.SERVER_TIMESTAMP,
+                            'adkMemoryId': adk_memory_id,
+                            'createdBy': actual_user_id
+                        })
+                        logger.info(f"Saved team memory to Firestore with ID {short_memory_id} (from adk_memory_id)")
+                    else:
+                        # Fallback to auto-generated ID if no adk_memory_id
+                        memories_col.add({
+                            'content': memory_text,
+                            'createdAt': firestore.SERVER_TIMESTAMP,
+                            'updatedAt': firestore.SERVER_TIMESTAMP,
+                            'adkMemoryId': adk_memory_id,
+                            'createdBy': actual_user_id
+                        })
 
                     logger.info(f"Successfully saved team memory for brand {current_brand_id}")
                     return {
@@ -873,6 +912,8 @@ async def save_memory(memory_text: str, user_id: str = "", scope: str = "persona
                     }
                 except Exception as e:
                     logger.error(f"Error saving to Vertex AI team memory: {e}")
+                    import traceback
+                    logger.error(traceback.format_exc())
                     # Fallback to Firestore only
                     db.collection('brands').document(current_brand_id).collection('memories').add({
                         'content': memory_text,
@@ -1189,8 +1230,9 @@ Format your response as a well-organized summary of the search findings.""",
         search_videos,  # Search videos specifically
         search_team_media,  # Team tool for multimodal media search
         find_similar_media,  # Find similar media items
+        search_youtube_videos,  # Team tool for searching YouTube and saving to media library
     ]
-    logger.info(f"Agent tools configured: {len(tools_list)} tools (including analyze_image for vision, using multi-agent search with google_search, media search tools: search_media_library, search_images, search_videos)")
+    logger.info(f"Agent tools configured: {len(tools_list)} tools (including analyze_image for vision, using multi-agent search with google_search, media search tools: search_media_library, search_images, search_videos, search_youtube_videos)")
 
     agent = Agent(
         model=model_name,
@@ -1222,6 +1264,7 @@ You have access to advanced AI tools and team capabilities:
 - plan_website: Website structure and content strategy
 - design_logo_concepts: Logo and visual identity concepts
 - create_event: Generate team events/campaigns with AI content
+- search_youtube_videos: Search YouTube for videos and save them to the media library. CRITICAL: When users ask to "find", "search for", "look for", or "show me" videos (especially when they mention YouTube or want to find videos online), you MUST use search_youtube_videos, NOT search_videos. search_videos searches the media library, while search_youtube_videos searches YouTube. The tool returns video metadata and URLs that can be saved to the media library.
 
 🍌 Special:
 - nano_banana: Edit uploaded images with AI (use when user wants to modify/edit/change an uploaded image)
@@ -1339,13 +1382,25 @@ Examples:
 - "What's on this page: https://..." → Call crawl_website to extract content first
 - "Analyze https://..." → Call crawl_website to get content, then analyze it
 
+**YouTube Video Search - CRITICAL DISTINCTION:**
+- ⚠️ IMPORTANT: There are TWO different video search tools:
+  1. search_youtube_videos: Searches YouTube.com for videos online. Use this when users want to FIND videos on YouTube, discover new videos, or search for videos to add to their library.
+  2. search_videos: Searches the EXISTING media library for videos already saved. Use this when users ask about videos they've already uploaded or saved.
+- When users ask to "find videos", "search for videos", "look for videos", "show me videos", or mention YouTube - IMMEDIATELY use search_youtube_videos
+- When users ask "what videos do I have", "show me my videos", "videos in my library" - use search_videos
+- Examples:
+  * "Find videos of cats" → search_youtube_videos(query="cats")
+  * "Search YouTube for marketing videos" → search_youtube_videos(query="marketing videos")
+  * "Show me my cat videos" → search_videos(query="cats")
+  * "What videos are in my library?" → search_videos(query="", limit=100)
+
 **Media Library Search - CRITICAL: YOU HAVE ACCESS TO THE MEDIA LIBRARY:**
-- ⚠️ YOU CAN AND MUST search the media library when users ask about media!
+- ⚠️ YOU CAN AND MUST search the media library when users ask about EXISTING media in their library!
 - NEVER say "I don't have access" - YOU DO! Just use the search tools!
 - When a user asks to "find", "search for", "look for", "show me", "how many", "count", "list", or "what" regarding EXISTING media in their library, IMMEDIATELY use the search tools
 - search_media_library: Use for general searches across all media types with Generative Recommendation (automatically expands queries for better results). For counting/list questions, use search_media_library(query="", limit=100) to get all media!
 - search_images: Use when explicitly searching for images/photos/pictures with Generative Recommendation. For "how many images" questions, use search_images(query="", limit=100) to get all images and count them!
-- search_videos: Use when explicitly searching for videos with Generative Recommendation. For "how many videos" questions, use search_videos(query="", limit=100) to get all videos and count them!
+- search_videos: Use when explicitly searching for videos ALREADY IN THE LIBRARY with Generative Recommendation. For "how many videos" questions, use search_videos(query="", limit=100) to get all videos and count them!
 - search_team_media: Use for team-specific searches with source filters
 - find_similar_media: Use when user wants to find media similar to something they're looking at
 - ❗ IMMEDIATE ACTION REQUIRED: When users ask "how many images/videos/media are in the library" or "count the media" - IMMEDIATELY call:

@@ -53,6 +53,12 @@ interface GlobalChatbotContextType {
   setSharedInput: (input: string) => void;
   sharedAttachments: MediaAttachment[];
   setSharedAttachments: React.Dispatch<React.SetStateAction<MediaAttachment[]>>;
+  // Thinking process state (for visual indicator in closed bubble)
+  sharedThinkingProcess: string[];
+  setSharedThinkingProcess: React.Dispatch<React.SetStateAction<string[]>>;
+  // Abort controller for canceling generation
+  sharedAbortController: AbortController | null;
+  setSharedAbortController: (controller: AbortController | null) => void;
 }
 
 const GlobalChatbotContext = createContext<GlobalChatbotContextType | undefined>(undefined);
@@ -73,6 +79,10 @@ export function GlobalChatbotProvider({ children }: { children: ReactNode }) {
   const [sharedIsLoading, setSharedIsLoading] = useState(false);
   const [sharedInput, setSharedInput] = useState('');
   const [sharedAttachments, setSharedAttachments] = useState<MediaAttachment[]>([]);
+  // Thinking process state (for visual indicator in closed bubble)
+  const [sharedThinkingProcess, setSharedThinkingProcess] = useState<string[]>([]);
+  // Abort controller for canceling generation
+  const [sharedAbortController, setSharedAbortController] = useState<AbortController | null>(null);
 
   const openChatbot = (options?: { attachments?: MediaAttachment[], initialMessage?: string }) => {
     if (options?.attachments) {
@@ -137,6 +147,12 @@ export function GlobalChatbotProvider({ children }: { children: ReactNode }) {
       setSharedInput,
       sharedAttachments,
       setSharedAttachments,
+      // Thinking process state
+      sharedThinkingProcess,
+      setSharedThinkingProcess,
+      // Abort controller
+      sharedAbortController,
+      setSharedAbortController,
     }}>
       {children}
     </GlobalChatbotContext.Provider>
